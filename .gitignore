@@ -2,7 +2,7 @@
 # Author: Konstantine Garas
 # E-mail: kgaras041@gmail.com
 # Created: Mon 10 Mar 2025 @ 14:21:25 +0100
-# Modified: Sun 31 May 2026 @ 18:07:45 +0200
+# Modified: Sat 08 Aug 2026 @ 18:25:30 +0200
 
 ### Linux ###
 *~
@@ -30,43 +30,12 @@ __pycache__/
 *.csv
 *.jpg
 *.jpeg
-logfile.txt
-structure.txt
-data.zip
-
-# ignore results/ folders
-Constant_Test_1/
-Constant_Test_2/
-Constant_Test_3/
-Constant_Test_4/
-Constant_Test_5/
-Horton_Test/
-Dry_Wet_Test/
-Ersoy/
-Non_Wrapping_Pulse/
-Smooth_Pulse/
-Smooth_Pulse_Inflow_Outflow/
 
 # ignore language auxiliary files
 ## Python
 *.pyc
 
-# ignore all the LaTeX automatically generated files
-*.aux
-*.bbl
-*.blg
-*.log
-*.out
-*.toc
-*.sty
-*.ttf
-*.nav
-*.snm
-*.vrb
-
-# ignore the code-workspace file
+# ignore the workspace files
 *.code-workspace
 *.vscode
-
-# ignore other specific files
-*.docx
+*.claude

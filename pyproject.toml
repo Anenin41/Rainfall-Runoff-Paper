@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-moment-sw = "swme.cli:main"
+moment-sw = "swme.main:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov"]

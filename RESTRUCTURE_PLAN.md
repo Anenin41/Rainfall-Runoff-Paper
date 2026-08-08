@@ -6,15 +6,21 @@ historical title context in the note above rather than rewriting every prose men
 `moment_sw` throughout §1-4, which describe design decisions made before the rename and
 are unaffected by it — see decision #5 for the mapping.)*
 
-**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, 2 and 3 complete. The solver now
-genuinely runs on the arbitrary-N generic engine: all hardcoded per-order blocks are
-deleted (`pde.py` 5034 → 2949 lines, `recharge/source_terms.py` 933 → 102), the
-`RechargeSWME1D` N ∈ {0,1,2} cap is gone, and 303 tests pass against golden reference
-values captured from the legacy code before deleting it. Two real bugs were found and
-fixed on the way (see Steps 2/3), and Step 3 carries a documented ~1.7x runtime cost with
-an identified follow-up. Step 4 (deleting the out-of-scope models: `HermiteMomentEquations`,
-`VegetationSWME1D`, the adaptive/`Micro_macro` simulation classes, `symbolic_math/`) is
-next.**
+**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, 2, 3 and 4 complete. The solver
+runs on the arbitrary-N generic engine (all hardcoded per-order blocks gone, the
+`RechargeSWME1D` N ∈ {0,1,2} cap lifted), and every out-of-scope model has been removed:
+`pde.py` is down from 5034 to 884 lines, `simulation.py` 2891 → 549, `plotting.py`
+466 → 165, `recharge/source_terms.py` 933 → 102, with `src/` totalling 4262 lines. 303
+tests pass against golden reference values captured from the legacy code before deletion.
+Two real bugs were found and fixed on the way (Steps 2/3); Step 3 carries a documented
+~1.7x runtime cost with an identified follow-up. **Step 4.5 then validated the whole
+refactor against the thesis's own analytical results** — §5.1 reproduces eq. (5.5) for all
+three `alpha_R` branches and §5.2 reproduces eqs. (5.9)-(5.10) to 3e-6 — and shipped a
+`--config` CLI plus 17 transcribed Chapter 5 test-case configs so the remaining
+(non-closed-form) baselines can be compared against stored thesis output.
+**Step 5 (bottom topography + well-balancing) is next — the first step that adds genuinely
+new numerics rather than restructuring existing behavior, so the reference run's numbers
+will legitimately change from here on.**
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -278,12 +284,22 @@ meaningless without recharge). Corrected split (implemented in Step 2):
   `delta_t`. Document (docstring + constructor-time assertion in `SWME1D.__init__`) the
   existing implicit invariant that `linear_source=True` must be paired with
   `ImplicitEuler` — currently only enforced by composition in `main.py`, make it explicit.
-- `compute_vertical_velocity_profile`'s hardcoded per-order polynomial list is replaced
-  with `coefficients.eval_phi(N, z_points)` contracted against `alpha`:
-  `u(z) = u_m + sum(alpha_i * phi_i(z))`. (Also fix a pre-existing off-by-one: the
-  `if order >= 0:` branch references `values[i,2]` = `alpha_1` unconditionally, out of
-  bounds for `order=0` — should be `if order >= 1:`. Harmless today only because it's
-  never called with `order=0`; fix while genericizing.)
+- `compute_vertical_velocity_profile`'s hardcoded per-order polynomial list should be
+  replaced with `coefficients.eval_phi(N, z_points)` contracted against `alpha`:
+  `u(z) = u_m + sum(alpha_i * phi_i(z))`. **STILL OUTSTANDING as of end of Step 4** — this
+  was listed as Step 3 work but was not actually done; it remains hardcoded through N=6.
+  **CORRECTION**: an earlier revision of this document claimed the method also had an
+  off-by-one bug (`if order >= 0:` reading `values[i,2]` as `alpha_1`). That was a
+  misreading and is **not** a bug. The method takes the *post-processed* array, whose
+  layout is `[x, h, u_m, a1, ..., aN]` with the position column prepended (see
+  `Simulation._post_processing` and `SWME1DPlotClassical.plot`, its only caller), so
+  `values[:,2]` is `u_m` and the indexing is correct. Verified numerically against
+  `eval_phi` for N=0,1,2: exact agreement. The only real defect is the **N<=6 cap**: for
+  N>=7 — now reachable, since Step 3 lifted the order cap everywhere else — it silently
+  drops the higher modes instead of erroring, which would quietly corrupt any
+  reconstructed-profile plot at high order. Low urgency (post-processing only, and the
+  thesis cases are N<=2) but it is a silent-wrong-answer path, so genericize it before
+  anyone runs high-N profile plots.
 
 ---
 
@@ -797,23 +813,102 @@ steps — they're what makes the hardcoded-block deletions safe.
       "Open items" below. Trading ~1.7x on a research solver for arbitrary-N support and
       2900 fewer lines of unmaintainable transcribed polynomials is the intended bargain,
       but it is a real cost and should not be discovered later by surprise.
-- [ ] **Step 4 — delete out-of-scope models**: `HermiteMomentEquations`,
+- [x] **Step 4 — delete out-of-scope models**: `HermiteMomentEquations`,
       `VegetationSWME1D`, adaptive/`Micro_macro` simulation classes, matching `plotting.py`
       classes, `main_HME_errorChecks.py`, `main_SWME_errorData.py`, `symbolic_math/`.
       (`recharge/source_terms.py` is NOT deleted — only its superseded N=0/1/2 functions are
       removed, in Step 3 above, alongside the `RechargeSWME1D` wiring; see the corrected
       deletion-plan table in §3.)
-      **Also, per user directive**: wipe `config/` down to nothing (or one minimal
-      canonical example) — delete `config/ConfigHME1D/`, `config/Config Micro-Macro/`,
-      `config/ConfigSWME1D/`, `config/Config_Cyril-honoursProject/`, and the current
-      `config/config.txt` itself, so the config directory starts clean for the new
-      format (see the config-format decision recorded below) rather than accumulating
-      stale examples for deleted models.
-      **Also (pending final confirmation, see chat)**: delete `matlab/` in its entirety —
-      nothing in it is needed; see the write-up in the conversation for the full
-      reasoning. If confirmed, add it to this step's deletion list; if the user wants it
-      kept for provenance/citation reasons, mark it explicitly "kept, intentionally
-      untouched" here instead and remove this TODO.
+      The `config/` wipe and the `matlab/` deletion listed here were already executed
+      earlier, in Step 1.5 — see that entry.
+      **DONE.** Deleted:
+        - `pde.py`: `VegetationSWME1D` (~780 lines) and `HermiteMomentEquations` (~1080),
+          plus the now-orphaned `compute_source_term_lastentry` and
+          `compute_breakdown_criteria_full` from both `SWME1D` and the `PDE` ABC (their
+          only callers were the adaptive simulation classes deleted in the same step).
+          **884 lines, down from 5034 at the start of Step 3** — an 82% reduction.
+        - `simulation.py` 2891 → 549: removed `SpatiallyAdaptiveSimulation1D` and its five
+          subclasses, and `Micro_macro`. `Simulation` (ABC) + `ClassicalSimulation1D`
+          remain; the now-unused `scipy.interpolate.BarycentricInterpolator` import went
+          with them.
+        - `plotting.py` 466 → 165: removed `SWME1DPlotAdaptive`, `HME1DPlotClassical`,
+          `HME1DPlotAdaptive`; kept `Plotting` (ABC) + `SWME1DPlotClassical`.
+        - `main.py` 430 → 313: removed the `VegetationSWME1D`/`HME`/`Grad` construction
+          branches, the five adaptive + micro-macro simulation branches, and the
+          model-vs-method plotting dispatch matrix (now a single
+          `SWME1DPlotClassical`). A non-`classical` `method` value now raises a clear
+          `ValueError` instead of silently leaving `_simulation` undefined; the
+          `if '_plotting' in locals()` guard and its dead-code companions (an unused
+          `data_frame`, commented-out CSV writes, the unused `exact_source_computation`
+          flag) are gone.
+        - `src/swme/main_HME_errorChecks.py`, `src/swme/main_SWME_errorData.py`,
+          `symbolic_math/` (whole directory) — all removed via `git rm`.
+        - `config/config.ini`: dropped the `breakdown_criterion` and `coupling` keys,
+          which only ever fed the deleted adaptive drivers.
+      **Repo total is now 4262 lines of Python across `src/`.**
+      **Process note / near-miss worth recording**: the first attempt used a helper script
+      that located methods by matching `    def <name>(` at four-space indent. That pattern
+      also matches the *method-listing lines inside class docstrings* that this codebase
+      uses heavily, so it silently deleted docstring lines — including a closing `"""`,
+      which broke `pde.py`'s syntax. Caught immediately by an `ast.parse` check rather than
+      by a test (the file could not even import). Repaired, and the remaining deletions
+      were redone with explicit, individually verified line ranges instead of name
+      matching. If further bulk surgery on this codebase is needed, prefer exact line
+      ranges — or a real AST-based tool — over textual `def` matching, and `ast.parse`
+      after every structural edit.
+      **Verified**: all 303 tests still pass; every module imports; the end-to-end
+      reference run reproduces `total mass = 242.1436312896249` exactly, i.e. bit-identical
+      to the post-Step-3 result (these deletions touched no code on the live path).
+- [x] **Step 4.5 — baseline-validation checkpoint** *(inserted at the user's request: a
+      deliberate pause to validate the refactor against the thesis's own results BEFORE
+      Step 5 starts changing numerics on purpose. From Step 5 onward the "reference run is
+      bit-identical" check stops applying, so this is the last clean point to confirm the
+      restructure preserved the physics.)*
+      **Assessment that prompted it**: no work was actually needed to make the code *run* —
+      it already did, and a sweep of 19 configurations (base SWME/HSWME at N=0,1,2 with
+      their own ICs; recharge with constant and Horton closures, both boundary conditions,
+      N=0,1,2; the `linear_source`+`ImplicitEuler` path; and N=3,4,5 beyond the old cap)
+      confirmed every combination runs and produces finite output. What was missing was
+      *convenience* (one hand-edited config, as in the legacy workflow) and two small gaps.
+      **DONE:**
+        - **Gap 1 — `compute_vertical_velocity_profile` genericized.** It was still
+          hardcoded through N=6 (a Step 3 item that had been listed but not executed), and
+          would *silently drop* higher modes for N>=7, which Step 3 had made reachable — a
+          silent-wrong-answer path. Now `values[:, 2:order+3] @ eval_phi(order, z)`, with
+          an explicit shape check that raises instead of truncating. Verified against
+          `eval_phi` for N=0,1,2,4 and confirmed working at N=7.
+        - **Gap 2 — corrected a false bug report in this document.** See the CORRECTION
+          note in §1: the claimed off-by-one in that same method was a misreading of the
+          array layout, not a real defect.
+        - **`--config` / `--output-dir` / `--list-configs` CLI** (pulled forward from Step
+          7, which still owns the full YAML rewrite). `--config` accepts a path or the bare
+          name of a config shipped in `swme/config/`. The console script `moment-sw` now
+          resolves (`pyproject.toml` pointed at the not-yet-existent `swme.cli:main`; it
+          now points at `swme.main:main`). Output filenames gained the config-name prefix —
+          without it, runs differing only in a parameter absent from the old tag (e.g.
+          `alpha_R`) silently overwrote each other, which was found the hard way when the
+          three §5.1 runs collapsed onto one file. Hyperbolicity CSVs are likewise now
+          per-run instead of one global pair. `[postprocessing]` keys all take fallbacks,
+          so a config may omit the section.
+        - **17 thesis test-case configs** transcribed from the Chapter 5 runtime-parameter
+          tables: `thesis_5p1_mixing_aR{0,1,2}`, `thesis_5p2_horton_at_rest`,
+          `thesis_5p3_pulse_N{0,1,2}`, `thesis_5p4_horton_N{0,1,2}`,
+          `thesis_5p5_horton_N{0,1,2}`, `thesis_5p6_source_{free,active}_N{1,2}`. All
+          verified well-formed; README documents a one-liner to run the whole set.
+      **Validation result — the refactor reproduces the thesis analytics.** Both Chapter 5
+      cases that have closed-form solutions were run and checked numerically:
+        - **§5.1** vs. eq. (5.5): all three branches match — `aR=0` discharge grows 1→2 at
+          constant velocity, `aR=1` discharge holds at 1 while velocity halves, `aR=2`
+          gives q≈0.497, u≈0.248 (thesis: "q ≈ 0.5 and um ≈ 0.25"). Max relative error
+          1.5e-3 / 3.3e-5 / 7.0e-3, consistent with first-order explicit time stepping;
+          spatial uniformity preserved to <1e-12.
+        - **§5.2** vs. eqs. (5.9)-(5.10): transition time t\* = 510.8 (thesis: ≈511), final
+          depth h(1800) = 1.1694 (thesis: 1.1694), relative error 3.2e-6, flow stays exactly
+          at rest (u_m = a_1 = 0) and spatially uniform.
+      This is independent confirmation that the generic-N engine reproduces the physics the
+      thesis reports, not merely the legacy code's arithmetic. The remaining Chapter 5 cases
+      (§5.3-§5.6) have no closed form and are for the user to compare against their stored
+      figures/CSVs.
 - [ ] **Step 5 — topography + well-balancing**: `mesh.py` bed elevation field, augmented
       `(U,Z)` path in `spatialDiscretization.py`, wiring in `simulation.py`. Write the
       lake-at-rest regression test as part of this step, not after.

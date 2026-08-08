@@ -39,19 +39,42 @@ uv sync
 # Run the test suite
 uv run pytest -q
 
-# Run a solver case from the config-driven entry point
-# (the active config lives at src/swme/config/config.ini; a forward-looking sketch of
-# the eventual YAML config format is at src/swme/config/example.yaml, not yet consumed
-# by code — see RESTRUCTURE_PLAN.md decision #6)
-uv run python -m swme.main
+# Run the default case (src/swme/config/config.ini)
+uv run moment-sw
+
+# List the configs shipped in src/swme/config/
+uv run moment-sw --list-configs
+
+# Run a specific case by name (or by path), with a chosen output directory
+uv run moment-sw --config thesis_5p3_pulse_N1 --output-dir results/5p3
 
 # On a headless machine, avoid plt.show() blocking/erroring:
-MPLBACKEND=Agg uv run python -m swme.main
+MPLBACKEND=Agg uv run moment-sw --config thesis_5p2_horton_at_rest
 ```
 
-Solver output (CSV snapshots, history, hyperbolicity diagnostics) is written to
-`Data-processing/Results/Recharge/` relative to wherever the command above is run from
-(typically the repo root).
+Solver output (CSV snapshots, history, hyperbolicity diagnostics) goes to
+`--output-dir`, else the config's `postprocessing/recharge_output_dir`, else
+`Data-processing/Results/Recharge/`. Filenames are prefixed with the config name, so
+successive cases don't overwrite each other.
+
+### Reproducing the thesis test cases
+
+`src/swme/config/` ships a config per test case of the thesis's Chapter 5, transcribed
+from its runtime-parameter tables — `thesis_5p1_mixing_aR{0,1,2}` (§5.1, rainfall-mixing
+validation), `thesis_5p2_horton_at_rest` (§5.2), `thesis_5p3_pulse_N{0,1,2}` (§5.3),
+`thesis_5p4_horton_N{0,1,2}` (§5.4, periodic), `thesis_5p5_horton_N{0,1,2}` (§5.5, open
+boundary), and `thesis_5p6_source_{free,active}_N{1,2}` (§5.6 ablation). Run the whole
+set with:
+
+```bash
+for c in $(uv run moment-sw --list-configs | grep '^thesis_'); do
+    MPLBACKEND=Agg uv run moment-sw --config "$c" --output-dir results/"$c"
+done
+```
+
+The two cases with closed-form solutions in the thesis are verified to reproduce it:
+§5.1 matches eq. (5.5) for all three `alpha_R` branches, and §5.2 matches eqs. (5.9)–(5.10)
+(transition time t\* = 510.8 vs. the thesis's ≈511; final depth 1.1694 vs. 1.1694).
 
 ## Development
 

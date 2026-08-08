@@ -1,6 +1,72 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
+from . import coefficients
+
+
+def _compute_system_matrix_generic(
+    order: int,
+    values: np.ndarray,
+    g: float = 1,
+    hyperbolic: bool = False,
+    eps_div: float = 1e-12,
+) -> np.ndarray:
+    """Generic-N system matrix A(U), replacing SWME1D.compute_system_matrix's
+    hardcoded `if order == 0/1/.../6:` blocks (RESTRUCTURE_PLAN.md Step 1/2/3).
+
+    NOT YET WIRED IN: staged here so tests/test_pde_regression.py can validate
+    it against the still-present hardcoded blocks (Step 2) before Step 3
+    replaces SWME1D.compute_system_matrix's body with a call to this function
+    (or an inlined equivalent) and deletes the hardcoded blocks.
+
+    Formulas (thesis Appendix C, general N):
+        A[0,1] = 1
+        A[1,0] = g*h - u_m^2 - sum_i alpha_i^2/(2i+1)
+        A[1,1] = 2*u_m
+        A[1,2:] = 2*alpha_i/(2i+1)
+        A[2:,0] = -2*u_m*alpha - einsum('ijk,j,k->i', A_t, alpha, alpha)
+        A[2:,1] = 2*alpha
+        A[2:,2:] = u_m*I + einsum('ilk,k->il', 2*A_t + B_t, alpha)
+    where A_t, B_t are the moment-moment blocks (indices 1..N) of the A_ijk,
+    B_ijk tensors from coefficients.get_coefficients(N). The `hyperbolic` flag
+    reproduces the existing HSWME regularization: alpha_2..alpha_N are zeroed
+    (alpha_1 is kept) before assembling the matrix, matching the legacy
+    per-order code's `if self.hyperbolic: alpha2 = 0; alpha3 = 0; ...`.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    n = order + 2
+    Amat = np.zeros((n, n), dtype=np.float64)
+
+    h = values[0]
+    h_reg = h if h > eps_div else eps_div
+    um = values[1] / h_reg
+
+    if order == 0:
+        Amat[0, 1] = 1.0
+        Amat[1, 0] = g * h - um * um
+        Amat[1, 1] = 2.0 * um
+        return Amat
+
+    alpha = (values[2:] / h_reg).astype(np.float64, copy=True)
+    if hyperbolic:
+        alpha[1:] = 0.0  # zero alpha_2..alpha_N, keep alpha_1
+
+    c = coefficients.get_coefficients(order)
+    i_idx = np.arange(1, order + 1)
+    two_i_plus_1 = 2 * i_idx + 1
+    A_t = c.A[1:, 1:, 1:]
+    B_t = c.B[1:, 1:, 1:]
+
+    Amat[0, 1] = 1.0
+    Amat[1, 0] = g * h - um * um - np.sum(alpha**2 / two_i_plus_1)
+    Amat[1, 1] = 2.0 * um
+    Amat[1, 2:] = 2.0 * alpha / two_i_plus_1
+    Amat[2:, 0] = -2.0 * um * alpha - np.einsum("ijk,j,k->i", A_t, alpha, alpha)
+    Amat[2:, 1] = 2.0 * alpha
+    Amat[2:, 2:] = um * np.eye(order) + np.einsum("ilk,k->il", 2.0 * A_t + B_t, alpha)
+    return Amat
+
+
 #TODO: implement MomentModel as a subclass of PDE and include the possibility of simulating PDEs that are not moment models (and don't have an order)
 class PDE(ABC):
     """

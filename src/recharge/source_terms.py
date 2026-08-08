@@ -1,6 +1,9 @@
 # Packages
 import numpy as np
 
+from swme import coefficients
+from swme.source_terms import reconstruct_boundary_velocities, compute_navier_slip_friction
+
 def _evaluate_rainfall_and_infiltration(
         values,
         rainfall,
@@ -822,3 +825,110 @@ def compute_total_source(
     }
 
     return S - P, diagnostics
+
+
+# ============================================================================ #
+# Generic-N (Step 2 staging): replaces every function above once Step 3/4      #
+# swap SWME1D/RechargeSWME1D over and delete the N=0/1/2 code and dispatchers. #
+# tests/test_recharge_regression.py validates these against the functions     #
+# above for N=0,1,2 before that deletion happens. See RESTRUCTURE_PLAN.md      #
+# Step 2/3. Only the genuinely recharge-specific terms live here - the base    #
+# Navier-slip contribution (`compute_navier_slip_friction`, imported above)    #
+# lives in `swme.source_terms` since it is part of the base SWME/HSWME model,  #
+# not a recharge addition (see thesis eq. 3.28/3.32-3.33: P(U) =               #
+# P_slip(U) + P_mix(U), and this module supplies only P_mix(U); S_{R,I}(U) is  #
+# entirely new physics introduced by the recharge extension).                  #
+# ============================================================================ #
+
+
+def compute_recharge_mass_source(
+    order: int, values: np.ndarray, R: float, I: float, eps_div: float = 1e-14
+) -> np.ndarray:
+    """S_{R,I}(U): direct rainfall/infiltration mass and momentum production
+    (thesis eq. 3.30), arbitrary N. R = I = 0 reproduces a zero source.
+
+        S[0] = R - I
+        S[1] = R*u_s - I*u_b
+        S[i+2] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
+                 + (2i+1)*I*(-phi_i(0)*u_b + u_m*s_i + sum_j F[i,j]*alpha_j)
+    """
+    values = np.asarray(values, dtype=np.float64)
+    h = values[0]
+    if h <= eps_div:
+        return np.zeros(order + 2, dtype=np.float64)
+
+    _, um, alpha, u_s, u_b = reconstruct_boundary_velocities(order, values, eps_div)
+    n = order + 2
+    S = np.zeros(n, dtype=np.float64)
+
+    S[0] = R - I
+    S[1] = R * u_s - I * u_b
+
+    if order >= 1:
+        c = coefficients.get_coefficients(order)
+        i_idx = np.arange(1, order + 1)
+        two_i_plus_1 = 2 * i_idx + 1
+        phi1 = c.phi_at_1[1:]
+        phi0 = c.phi_at_0[1:]
+        r = c.r[1:]
+        s = c.s[1:]
+        E_block = c.E[1:, 1:]
+        F_block = c.F[1:, 1:]
+
+        rain = phi1 * u_s - um * r - E_block @ alpha
+        infil = -phi0 * u_b + um * s + F_block @ alpha
+        S[2:] = two_i_plus_1 * R * rain + two_i_plus_1 * I * infil
+
+    return S
+
+
+def compute_mixing_friction(
+    order: int, values: np.ndarray, f_R: float, f_I: float, eps_div: float = 1e-14
+) -> np.ndarray:
+    """P_mix(U): rainfall/infiltration-induced mixing friction only (thesis
+    eq. 3.33, excluding the Navier-slip term - see module docstring),
+    arbitrary N. f_R = f_I = 0 reproduces a zero contribution.
+
+        P_mix[0] = 0
+        P_mix[1] = f_R*u_s + f_I*u_b
+        P_mix[i+2] = (2i+1)*(f_R*phi_i(1)*u_s + f_I*phi_i(0)*u_b),   i = 1..N
+    """
+    values = np.asarray(values, dtype=np.float64)
+    h = values[0]
+    if h <= eps_div:
+        return np.zeros(order + 2, dtype=np.float64)
+
+    _, um, alpha, u_s, u_b = reconstruct_boundary_velocities(order, values, eps_div)
+    n = order + 2
+    P = np.zeros(n, dtype=np.float64)
+
+    P[1] = f_R * u_s + f_I * u_b
+
+    if order >= 1:
+        c = coefficients.get_coefficients(order)
+        i_idx = np.arange(1, order + 1)
+        two_i_plus_1 = 2 * i_idx + 1
+        phi1 = c.phi_at_1[1:]
+        phi0 = c.phi_at_0[1:]
+        P[2:] = two_i_plus_1 * (f_R * phi1 * u_s + f_I * phi0 * u_b)
+
+    return P
+
+
+def compute_total_friction(
+    order: int,
+    values: np.ndarray,
+    f_R: float,
+    f_I: float,
+    viscosity: float,
+    slip_length: float,
+    eps_div: float = 1e-14,
+) -> np.ndarray:
+    """P(U) = P_slip(U) + P_mix(U), the full generalized friction block used
+    by RechargeSWME1D (direct generic analog of the old
+    `compute_friction_matrix_n0/n1/n2`, which returned this same combined
+    quantity). The solver uses S_total(U) = S_{R,I}(U) - P(U).
+    """
+    return compute_navier_slip_friction(
+        order, values, viscosity, slip_length, eps_div
+    ) + compute_mixing_friction(order, values, f_R, f_I, eps_div)

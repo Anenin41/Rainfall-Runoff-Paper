@@ -1,10 +1,16 @@
-# `moment_sw` Restructure Plan — Arbitrary-N, Well-Balanced, Wet-Dry SWME/HSWME/RechargeSWME Solver
+# `swme`/`recharge` Restructure Plan — Arbitrary-N, Well-Balanced, Wet-Dry SWME/HSWME/RechargeSWME Solver
 
-**Status: IMPLEMENTATION IN PROGRESS — Steps 0-1 complete (scaffolding, coefficients
-engine) under the original `src/moment_sw/` name. Step 1.5 (package rename to sibling
-`src/swme/` + `src/recharge/`, YAML config, `matlab/` deletion — decisions added after
-Steps 0-1 landed) has NOT been executed yet; the repo on disk still says `moment_sw`
-everywhere as of this writing. Do Step 1.5 before or as part of picking Step 2 back up.**
+*(Originally titled the "`moment_sw` Restructure Plan" — the package has since been
+renamed to `swme` with `recharge` as a sibling package, per Step 1.5 below. Left the
+historical title context in the note above rather than rewriting every prose mention of
+`moment_sw` throughout §1-4, which describe design decisions made before the rename and
+are unaffected by it — see decision #5 for the mapping.)*
+
+**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, and 1.5 complete: scaffolding,
+coefficients engine, and the package rename/config cleanup (`src/swme/` + `src/recharge/`
+sibling layout, `matlab/` deleted, `config/` wiped down to `config.ini` +
+`config/example.yaml` stub). Step 2 (regression tests against old hardcoded `pde.py`,
+comparing against `swme.pde`) is next.**
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -91,17 +97,20 @@ hardcoded `config/config.txt`. This restructure also introduces `uv`-based packa
    thing that would have justified keeping it as reference for Steps 5-6). See Step 4.
 5. **Package layout: rename `moment_sw` → `swme`, and un-nest `recharge` as a sibling
    top-level package** (added after Steps 0-1 landed, so Steps 0-1 were implemented under
-   the old `src/moment_sw/{*, recharge/}` name — **not yet renamed as of this writing**,
-   see the new Step 1.5). Going forward, every `moment_sw.*` reference in this document
-   (including in §1-4 below, written before this decision) means what becomes `swme.*`;
-   `recharge/*` becomes the sibling top-level package `src/recharge/`, not nested inside
-   `swme/`. `recharge` imports from `swme` as a normal cross-package import (e.g.
+   the old `src/moment_sw/{*, recharge/}` name; **executed in Step 1.5, done** — the repo
+   on disk is now `src/swme/` + `src/recharge/`). Every `moment_sw.*` reference elsewhere
+   in this document (§1-4 below, written before this decision) means what is now
+   `swme.*`; `recharge/*` is the sibling top-level package `src/recharge/`, not nested
+   inside `swme/`. `recharge` imports from `swme` as a normal cross-package import (e.g.
    `from swme.pde import SWME1D`), not a relative parent-package import.
 6. **Config format: real YAML**, not `configparser`/INI (added after Steps 0-1 landed;
-   Step 0's `config/config.txt` was fixed to *run*, not redesigned — it gets replaced
-   wholesale in Step 4/Step 1.5, see below). Add `pyyaml` as a dependency; the config
-   loader in `cli.py` (Step 7) uses `yaml.safe_load` and native YAML types instead of
-   `configparser`'s `getboolean()`/`getfloat()` string coercion.
+   Step 0's `config/config.txt` was fixed to *run*, not redesigned). `pyyaml` is now a
+   dependency (added in Step 1.5). Step 1.5 renamed `config.txt` → `config.ini` (same
+   `configparser`-readable content, `main.py` still reads it) and added
+   `config/example.yaml` as an unconsumed stub sketching the target schema. The actual
+   loader swap — `cli.py` (Step 7) using `yaml.safe_load` and native YAML types instead
+   of `configparser`'s `getboolean()`/`getfloat()` string coercion — is still pending,
+   deliberately deferred to Step 7 since `main.py` gets fully rewritten there anyway.
 
 ---
 
@@ -553,30 +562,45 @@ steps — they're what makes the hardcoded-block deletions safe.
       already hand-verified in this plan's §0/§1 (`A_111=0`, `B_111=0`, `C_11=4` →
       `3*C_11=12` matching the old hardcoded `12*nu/h` friction term, `E_11=F_11=1/3`,
       `E_10=-1`, `F_10=1`) — all match exactly.
-- [ ] **Step 1.5 — package rename & config format migration** *(inserted after Steps 0-1
+- [x] **Step 1.5 — package rename & config format migration** *(inserted after Steps 0-1
       landed under the old names; kept as "1.5" rather than renumbering every subsequent
-      step)*. Implements decisions #4-6 in "User decisions locked in": `git mv
-      src/moment_sw src/swme`, `git mv src/swme/recharge src/recharge` (un-nest), update
-      every intra-package import accordingly (`recharge/*.py`'s
-      `from ..pde import SWME1D`-style relative-parent imports become absolute
-      `from swme.pde import SWME1D`-style cross-package imports; `swme/*.py`'s existing
-      `from . import X` imports are unaffected since they stay relative *within* `swme/`).
-      Update `pyproject.toml` (`[tool.hatch.build.targets.wheel] packages`, `pyyaml`
-      dependency, `docs` dependency group, script entry point → `swme.cli:main`). Add
-      `mkdocs`/`mkdocs-material`/`mkdocstrings` to a new `docs` dependency group now (even
-      though Step 9 is when they get *used*) so `pyproject.toml` doesn't need touching
-      twice. Delete `matlab/` (decision #4). Wipe `config/` per Step 4's config-directory
-      note and replace `config/config.txt` with a minimal `config/example.yaml` (can be
-      a stub at this point — the real config schema is finalized in Step 7's `cli.py`
-      rewrite, which is also when the `configparser` → `yaml.safe_load` loader swap
-      actually happens; this step only needs the package rename + dependency additions +
-      directory cleanup to hold together, not a working YAML-driven `main.py` yet — a
-      literal `config.txt`-reading `main.py` can keep working against a leftover/minimal
-      INI file colocated in `config/` until Step 7, OR you may choose to do the YAML
-      loader swap right here instead of deferring to Step 7 if that's less disruptive in
-      practice — implementer's call, not a hard requirement either way). Re-run the Step 0
-      end-to-end smoke test (`uv sync`, import check, one full config run) against the
-      new layout to confirm nothing broke in the move.
+      step)*. Implements decisions #4-6 in "User decisions locked in".
+      **DONE.** `git mv src/moment_sw src/swme`, `git mv src/swme/recharge src/recharge`
+      (un-nested to a sibling package). Import fixes: `recharge/recharge_pde.py`'s
+      `from ..pde import SWME1D` → `from swme.pde import SWME1D` (cross-package, since
+      `recharge` is no longer nested inside `swme`); `recharge/*.py`'s intra-package
+      imports (`.context`, `.source_terms`, `.recharge_pde`, `.laws`) were already
+      relative-within-`recharge` and needed no change; `swme/main.py`'s
+      `from .recharge.initial_conditions import ...` / `from .recharge.laws import ...`
+      → `from recharge.initial_conditions import ...` / `from recharge.laws import ...`
+      (absolute, sibling package, not a `swme`-relative submodule anymore); `swme/*.py`'s
+      existing `from . import X` imports (main.py, plotting.py, simulation.py) were
+      unaffected — still relative *within* `swme/`. `tests/test_coefficients.py`'s
+      `from moment_sw import coefficients` → `from swme import coefficients`.
+      `pyproject.toml`: added `pyyaml>=6.0` to `dependencies`, added a `docs` dependency
+      group (`mkdocs`, `mkdocs-material`, `mkdocstrings[python]` — added now per the
+      original note so the file doesn't need touching twice before Step 9), script entry
+      point → `swme.cli:main` (still unresolved until Step 7's `cli.py` exists, harmless),
+      `[tool.hatch.build.targets.wheel] packages = ["src/swme", "src/recharge"]`.
+      `matlab/` deleted in its entirety (`git rm -r matlab/`, decision #4). `config/`
+      wiped: deleted `ConfigHME1D/`, `Config Micro-Macro/`, `ConfigSWME1D/`,
+      `Config_Cyril-honoursProject/`; renamed the active `config.txt` → `config.ini`
+      (same `configparser`-readable INI content, just an honest extension — chose to
+      **keep it working via `configparser` for now** rather than force the YAML loader
+      swap into this step, since `main.py` is fully rewritten as `cli.py` in Step 7
+      anyway and doing the YAML rewrite twice would be wasted effort); added
+      `config/example.yaml` as a **stub, not yet consumed by any code** — a
+      forward-looking sketch of the intended YAML schema (mirrors `config.ini`'s current
+      active RechargeSWME1D/N=1/constant-exfiltration case) so the target structure is
+      visible ahead of the real Step 7 rewrite. `main.py`'s `config.read(...)` call and
+      one comment updated from `config.txt` → `config.ini` accordingly.
+      **Verified**: `uv sync` succeeds (pulls in `pyyaml`); every `swme.*` and
+      `recharge.*` submodule imports cleanly as sibling packages; `uv run pytest` — all
+      35 tests still pass; a full end-to-end run of the same RechargeSWME1D/N=1/constant-
+      exfiltration config via `MPLBACKEND=Agg uv run python -m swme.main` reproduces the
+      **exact same** `total mass = 242.14363128962492` as the pre-rename Step 0 run
+      (byte-identical numerical result — confirms the move/rename changed nothing about
+      behavior) and writes the same CSVs to `Data-processing/Results/Recharge/`.
 - [ ] **Step 2 — regression tests against old hardcoded code** (§3's mandatory step):
       parametrized N=0..6 equality tests for system matrix, friction source, and the
       matrix-inverse implicit source, comparing old hardcoded `pde.py` against not-yet-written

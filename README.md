@@ -15,15 +15,16 @@ updated as work lands.
 ## Repository layout
 
 ```text
-src/moment_sw/     # the solver (SWME/HSWME/RechargeSWME); being renamed/split into
-                   # src/swme/ + src/recharge/ per RESTRUCTURE_PLAN.md Step 1.5
+src/swme/          # the core solver (SWME/HSWME/RechargeSWME transport, coefficients
+                   # engine, mesh, simulation driver, numerical schemes)
+src/recharge/      # rainfall/infiltration/exfiltration extension, a sibling package to
+                   # src/swme/ (imports from it, e.g. `from swme.pde import SWME1D`)
 processing/        # downstream post-processing scripts for solver CSV output
                    # (not part of the installable package)
-matlab/            # legacy MATLAB reference implementation — scheduled for deletion,
-                   # see RESTRUCTURE_PLAN.md decision #4
 symbolic_math/     # sympy scripts for deriving the moment-basis projection tensors
                    # (A_ijk, B_ijk, C_ij, r_i, s_i, E_ij, F_ij); superseded by
-                   # src/moment_sw/coefficients.py and scheduled for deletion
+                   # src/swme/coefficients.py, scheduled for deletion (RESTRUCTURE_PLAN.md
+                   # Step 4)
 tests/             # pytest suite (currently: coefficients engine regression tests)
 ```
 
@@ -39,11 +40,13 @@ uv sync
 uv run pytest -q
 
 # Run a solver case from the config-driven entry point
-# (the active config lives at src/moment_sw/config/config.txt)
-uv run python -m moment_sw.main
+# (the active config lives at src/swme/config/config.ini; a forward-looking sketch of
+# the eventual YAML config format is at src/swme/config/example.yaml, not yet consumed
+# by code — see RESTRUCTURE_PLAN.md decision #6)
+uv run python -m swme.main
 
 # On a headless machine, avoid plt.show() blocking/erroring:
-MPLBACKEND=Agg uv run python -m moment_sw.main
+MPLBACKEND=Agg uv run python -m swme.main
 ```
 
 Solver output (CSV snapshots, history, hyperbolicity diagnostics) is written to
@@ -65,13 +68,14 @@ uv add --group dev <package>
 ```
 
 Once [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) Step 9 lands, a documentation site will
-be available via `uv run mkdocs serve` (local preview) / `uv run mkdocs build`.
+be available via `uv sync --group docs` then `uv run mkdocs serve` (local preview) /
+`uv run mkdocs build`.
 
 ## Status
 
 See [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md)'s "Execution checklist" section for the
 authoritative, up-to-date list of completed vs. pending work. As of this writing: package
-scaffolding and the arbitrary-N coefficient engine are done; the package rename
-(`moment_sw` → `swme` + sibling `recharge`), YAML config migration, `matlab/` deletion,
-hardcoded-model deletion, topography/well-balancing, wet-dry treatment, the CLI rewrite,
-and the documentation site are still pending.
+scaffolding, the arbitrary-N coefficient engine, and the `swme`/`recharge` sibling-package
+rename (with `matlab/` deleted and `config/` cleaned up) are done. Still pending: deleting
+the remaining hardcoded per-order models, topography/well-balancing, wet-dry treatment,
+the YAML-driven CLI rewrite, and the documentation site.

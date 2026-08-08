@@ -1,4 +1,4 @@
-"""Regression tests for moment_sw.coefficients.
+"""Regression tests for swme.coefficients.
 
 Validates:
   - the closed forms for r, s, E, F against direct sympy integration
@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import sympy as sp
 
-from moment_sw import coefficients as coeff
+from swme import coefficients as coeff
 
 
 N_VALUES = list(range(0, 9))  # N = 0..8

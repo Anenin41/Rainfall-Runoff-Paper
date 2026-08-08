@@ -17,8 +17,8 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 # branch.
 try:
     import os
-    from .recharge.initial_conditions import RechargeSWME1D_CustomIC as RechargeSWME1D
-    from .recharge.laws import (
+    from recharge.initial_conditions import RechargeSWME1D_CustomIC as RechargeSWME1D
+    from recharge.laws import (
         HortonInfiltration, ConstantInfiltration, AdmissibleMixingFriction,
     )
 
@@ -42,13 +42,13 @@ except ImportError:
 def main():
 
     config = configparser.ConfigParser()
-    config.read(_PACKAGE_DIR / 'config' / 'config.txt')
+    config.read(_PACKAGE_DIR / 'config' / 'config.ini')
     pde_information = config['pde_information']
     grid_information = config['grid_information']
     numerical_method_information = config['numerical_method_information']
 
     if HAS_RECHARGE:
-        # Check if there exist a 'postprocessing' section on config.txt
+        # Check if there exist a 'postprocessing' section on config.ini
         postprocessing = config['postprocessing']
     
         # Make a post-processing storade directory if one doesn't exist. 

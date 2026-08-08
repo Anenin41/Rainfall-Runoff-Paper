@@ -2,7 +2,7 @@
 import numpy as np
 
 # Local imports
-from ..pde import SWME1D
+from swme.pde import SWME1D
 from .context import SourceContext
 from .source_terms import compute_total_source
 

@@ -1,6 +1,10 @@
 # `moment_sw` Restructure Plan — Arbitrary-N, Well-Balanced, Wet-Dry SWME/HSWME/RechargeSWME Solver
 
-**Status: IMPLEMENTATION IN PROGRESS — Step 0 (scaffolding) complete, Step 1 next.**
+**Status: IMPLEMENTATION IN PROGRESS — Steps 0-1 complete (scaffolding, coefficients
+engine) under the original `src/moment_sw/` name. Step 1.5 (package rename to sibling
+`src/swme/` + `src/recharge/`, YAML config, `matlab/` deletion — decisions added after
+Steps 0-1 landed) has NOT been executed yet; the repo on disk still says `moment_sw`
+everywhere as of this writing. Do Step 1.5 before or as part of picking Step 2 back up.**
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -81,6 +85,23 @@ hardcoded `config/config.txt`. This restructure also introduces `uv`-based packa
 3. **Batch parameter-sweep scripts** (`main_HME_errorChecks.py`,
    `main_SWME_errorData.py`): **delete, do not replace.** Arbitrary-N support plus a clean
    CLI makes ad-hoc sweeps easy to script later if ever needed; out of scope now.
+4. **`matlab/`: delete in its entirety** (added after Steps 0-1 landed). Nothing in it is
+   needed — its transport-matrix math, numerical scheme, and friction closure are all
+   superseded by the Python solver, and it has zero topography/wet-dry content (the one
+   thing that would have justified keeping it as reference for Steps 5-6). See Step 4.
+5. **Package layout: rename `moment_sw` → `swme`, and un-nest `recharge` as a sibling
+   top-level package** (added after Steps 0-1 landed, so Steps 0-1 were implemented under
+   the old `src/moment_sw/{*, recharge/}` name — **not yet renamed as of this writing**,
+   see the new Step 1.5). Going forward, every `moment_sw.*` reference in this document
+   (including in §1-4 below, written before this decision) means what becomes `swme.*`;
+   `recharge/*` becomes the sibling top-level package `src/recharge/`, not nested inside
+   `swme/`. `recharge` imports from `swme` as a normal cross-package import (e.g.
+   `from swme.pde import SWME1D`), not a relative parent-package import.
+6. **Config format: real YAML**, not `configparser`/INI (added after Steps 0-1 landed;
+   Step 0's `config/config.txt` was fixed to *run*, not redesigned — it gets replaced
+   wholesale in Step 4/Step 1.5, see below). Add `pyyaml` as a dependency; the config
+   loader in `cli.py` (Step 7) uses `yaml.safe_load` and native YAML types instead of
+   `configparser`'s `getboolean()`/`getfloat()` string coercion.
 
 ---
 
@@ -363,43 +384,45 @@ then swap the implementation.
 
 ## 4. Target package layout (`uv`)
 
+**Superseded by the naming/layout decision recorded above — this is the current target.**
 Post-deletion the codebase is roughly 4–6k lines — an order of magnitude below where
-splitting `pde.py`/`simulation.py` into subpackages would pay for itself. **Flat
-`src/moment_sw/*.py` layout, do not further subdivide.** Keep `recharge/` as the one
-subpackage (genuine cross-cutting extension with its own laws/ICs/context). Keep
-`matlab/` and `processing/` outside the installable package (reference/downstream only,
-`processing/` confirmed to have no code dependency on `moment_sw` internals).
+splitting `pde.py`/`simulation.py` further would pay for itself, but per the user's
+explicit preference, `recharge` is a **sibling top-level package**, not nested inside the
+core solver package (named `swme`, formerly planned as `moment_sw`). `matlab/` is deleted
+outright (decision #4 above). `processing/` stays outside the installable package
+(confirmed no code dependency on solver internals).
 
 ```
-recharge-paper/                        # repo root becomes the uv project root
+recharge-paper/                        # repo root is the uv project root
 ├── pyproject.toml
 ├── README.md
 ├── RESTRUCTURE_PLAN.md                # this file
+├── mkdocs.yml                         # NEW — Step 9
+├── docs/                              # NEW — Step 9
 ├── src/
-│   └── moment_sw/
+│   ├── swme/                          # core solver (formerly planned as moment_sw)
+│   │   ├── __init__.py
+│   │   ├── coefficients.py            # §1, absorbs symbolic_math/symbo.py math
+│   │   ├── source_terms.py            # §1, promoted generic friction/recharge source
+│   │   ├── mesh.py                    # + bed_elevation — §2.1
+│   │   ├── pde.py                     # SWME1D only, genericized — §1/§2
+│   │   ├── spatialDiscretization.py   # + augmented-path topography — §2.2
+│   │   ├── timeIntegration.py         # unchanged
+│   │   ├── simulation.py              # Simulation (ABC) + ClassicalSimulation1D only
+│   │   ├── plotting.py                # Plotting (ABC) + SWME1DPlotClassical only
+│   │   └── cli.py                     # replaces main.py's ad hoc script
+│   └── recharge/                      # sibling package, NOT nested inside swme/
 │       ├── __init__.py
-│       ├── coefficients.py            # NEW — §1, absorbs symbolic_math/symbo.py math
-│       ├── source_terms.py            # NEW — §1, promoted generic friction/recharge source
-│       ├── mesh.py                    # + bed_elevation — §2.1
-│       ├── pde.py                     # SWME1D only, genericized — §1/§2
-│       ├── spatialDiscretization.py   # + augmented-path topography — §2.2
-│       ├── timeIntegration.py         # unchanged
-│       ├── simulation.py              # Simulation (ABC) + ClassicalSimulation1D only
-│       ├── plotting.py                # Plotting (ABC) + SWME1DPlotClassical only
-│       ├── cli.py                     # NEW — replaces main.py's ad hoc script
-│       └── recharge/
-│           ├── __init__.py
-│           ├── context.py
-│           ├── laws.py
-│           ├── initial_conditions.py
-│           └── recharge_pde.py
-├── config/                            # kept, trimmed per §3
+│       ├── context.py
+│       ├── laws.py
+│       ├── initial_conditions.py
+│       └── recharge_pde.py            # imports `from swme.pde import SWME1D` etc.
+├── config/                            # wiped per §3/Step 4, YAML going forward
 ├── processing/                        # unchanged
-├── matlab/                            # unchanged, reference only
-└── tests/                             # NEW — regression suite (§1/§3) + lake-at-rest, wet-dry cases (§2)
+└── tests/                             # regression suite (§1/§3) + lake-at-rest, wet-dry, mkdocs build sanity
 ```
 
-`pyproject.toml` skeleton:
+`pyproject.toml` skeleton (updated for the sibling layout + YAML):
 ```toml
 [project]
 name = "moment-sw"
@@ -412,33 +435,39 @@ dependencies = [
     "matplotlib>=3.9",
     "pandas>=2.2",
     "sympy>=1.13",       # runtime dep: coefficients.py needs it for A/B/C at first use per N
+    "pyyaml>=6.0",        # NEW — config format decision, see above
 ]
 
 [project.scripts]
-moment-sw = "moment_sw.cli:main"
+moment-sw = "swme.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov"]
+docs = ["mkdocs>=1.6", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]  # NEW — Step 9
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/moment_sw"]
+packages = ["src/swme", "src/recharge"]
 ```
+(The distribution/project name stays `moment-sw` and the installed console-script command
+stays `moment-sw` for continuity — only the *importable* package names change. Revisit if
+that's confusing once `swme`/`recharge` exist as separate top-level packages; trivial to
+rename later either way.)
 
 Install/run via `uv sync` then `uv run moment-sw ...` (or `uv run pytest`). Delete
-`moment_sw/requirements.txt` and `Makefile` once `uv` is confirmed working (`Makefile`'s
-only rule, `purge` — deleting `Data-processing/Results/Recharge/` — can move to a small
-`uv run` script or a `[tool.hatch]` hook, low priority, decide during implementation).
+`swme/requirements.txt`-equivalent and `Makefile` once `uv` is confirmed working
+(`Makefile`'s only rule, `purge` — deleting `Data-processing/Results/Recharge/` — can move
+to a small `uv run` script or a `[tool.hatch]` hook, low priority).
 
 `main.py`'s current ~430-line script (config parsing + large if/elif dispatch tables, most
-branches referencing deleted classes) is **rewritten as `cli.py`**, not just trimmed:
-config-driven construction of exactly `SWME1D | RechargeSWME1D` × the PVM-family schemes
-(PRICE/LF/Roe/Osher) × `{ExplicitEuler, ImplicitEuler, Exact}` × `ClassicalSimulation1D`.
-Keep the existing config-key-string dispatch style (it's fine at this reduced scope), just
-strip every branch referencing deleted models/methods (`mpi`, `micro_macro`, `*Adaptive`).
+branches referencing deleted classes) is **rewritten as `cli.py`**, not just trimmed: a
+YAML-driven (not `configparser`-driven, per the config-format decision above) construction
+of exactly `SWME1D | RechargeSWME1D` × the PVM-family schemes (PRICE/LF/Roe/Osher) ×
+`{ExplicitEuler, ImplicitEuler, Exact}` × `ClassicalSimulation1D`. Strip every branch
+referencing deleted models/methods (`mpi`, `micro_macro`, `*Adaptive`) while rewriting.
 
 ---
 
@@ -489,9 +518,65 @@ steps — they're what makes the hardcoded-block deletions safe.
       `main_HME_errorChecks.py`/`main_SWME_errorData.py` were **not** import-fixed (still
       using flat imports) since they're deleted wholesale in Step 4 — not worth fixing
       dead-code-walking files.
-- [ ] **Step 1 — coefficients engine**: write `moment_sw/coefficients.py` (ported from
+- [x] **Step 1 — coefficients engine**: write `moment_sw/coefficients.py` (ported from
       `symbolic_math/symbo.py` + closed forms for r/s/E/F), with unit tests validating the
       closed forms against sympy integration for N=0..8.
+      **DONE.** `src/moment_sw/coefficients.py` implements:
+        - `Coefficients` frozen dataclass (`N, A, B, C, E, F, r, s, phi_at_1, phi_at_0`,
+          all float64 numpy arrays, indices 0..N with index 0 = depth-averaged mode).
+        - `get_coefficients(N)`, `@lru_cache`-memoized: `A` (Wigner-3j closed form, no
+          basis needed), `B` (needs the `J_j` antiderivative table), `C` (basis-derivative
+          inner product) computed via ported-not-imported sympy machinery
+          (`_build_shifted_legendre_basis`, `_compute_A/_B/_C/_JP`, exact `Rational` →
+          `float()`); `E`, `F`, `r`, `s` computed directly from the closed forms (no sympy
+          at runtime).
+        - `eval_phi(N, z)`: float64 Bonnet recurrence for `phi_i(z)`, for post-processing
+          (vertical velocity profile reconstruction) only — never on the hot path.
+        - Private sympy reference implementations `_compute_r_s_sympy` /
+          `_compute_E_F_sympy` are kept (unused at runtime) specifically so the closed
+          forms can be tested against them — see below.
+      **Bug caught by the test suite and fixed**: the initial closed-form implementation
+      set `r_0 = s_0 = phi_0(1) = phi_0(0)`-style values all from the same array, but
+      `r_i`/`s_i` and `phi_i(1)`/`phi_i(0)` are genuinely different quantities at `i=0`.
+      `phi_0(z) = 1` (constant), so `dphi_0/dz ≡ 0`, hence `r_0 = s_0 = 0` exactly, while
+      `phi_0(1) = phi_0(0) = 1`. The closed forms `r_i=(-1)^i`, `s_i=1` (thesis Appendix
+      B.1) only hold for `i>=1`; verified against direct sympy evaluation. Fixed in
+      `get_coefficients`, decoupled `phi_at_1`/`phi_at_0` from `r`/`s` as independent
+      arrays. Index 0 is not a physical moment variable either way, but the arrays must be
+      numerically correct at every index since `pde.py`/`source_terms.py` will slice them
+      generically in Step 3, not special-case index 0 by hand.
+      **Verified**: `tests/test_coefficients.py`, 35 tests, all passing
+      (`uv run pytest`) — closed-form `r/s/E/F` vs. sympy for N=0..8, `A` sanity checks
+      (known value `A_000=1`, Wigner-3j parity zero `A_111=0`, symmetry in the last two
+      indices), shape checks, `lru_cache` identity, negative-N rejection, `eval_phi` vs.
+      exact basis evaluation. Additionally cross-checked by hand against the N=1 formulas
+      already hand-verified in this plan's §0/§1 (`A_111=0`, `B_111=0`, `C_11=4` →
+      `3*C_11=12` matching the old hardcoded `12*nu/h` friction term, `E_11=F_11=1/3`,
+      `E_10=-1`, `F_10=1`) — all match exactly.
+- [ ] **Step 1.5 — package rename & config format migration** *(inserted after Steps 0-1
+      landed under the old names; kept as "1.5" rather than renumbering every subsequent
+      step)*. Implements decisions #4-6 in "User decisions locked in": `git mv
+      src/moment_sw src/swme`, `git mv src/swme/recharge src/recharge` (un-nest), update
+      every intra-package import accordingly (`recharge/*.py`'s
+      `from ..pde import SWME1D`-style relative-parent imports become absolute
+      `from swme.pde import SWME1D`-style cross-package imports; `swme/*.py`'s existing
+      `from . import X` imports are unaffected since they stay relative *within* `swme/`).
+      Update `pyproject.toml` (`[tool.hatch.build.targets.wheel] packages`, `pyyaml`
+      dependency, `docs` dependency group, script entry point → `swme.cli:main`). Add
+      `mkdocs`/`mkdocs-material`/`mkdocstrings` to a new `docs` dependency group now (even
+      though Step 9 is when they get *used*) so `pyproject.toml` doesn't need touching
+      twice. Delete `matlab/` (decision #4). Wipe `config/` per Step 4's config-directory
+      note and replace `config/config.txt` with a minimal `config/example.yaml` (can be
+      a stub at this point — the real config schema is finalized in Step 7's `cli.py`
+      rewrite, which is also when the `configparser` → `yaml.safe_load` loader swap
+      actually happens; this step only needs the package rename + dependency additions +
+      directory cleanup to hold together, not a working YAML-driven `main.py` yet — a
+      literal `config.txt`-reading `main.py` can keep working against a leftover/minimal
+      INI file colocated in `config/` until Step 7, OR you may choose to do the YAML
+      loader swap right here instead of deferring to Step 7 if that's less disruptive in
+      practice — implementer's call, not a hard requirement either way). Re-run the Step 0
+      end-to-end smoke test (`uv sync`, import check, one full config run) against the
+      new layout to confirm nothing broke in the move.
 - [ ] **Step 2 — regression tests against old hardcoded code** (§3's mandatory step):
       parametrized N=0..6 equality tests for system matrix, friction source, and the
       matrix-inverse implicit source, comparing old hardcoded `pde.py` against not-yet-written
@@ -504,7 +589,18 @@ steps — they're what makes the hardcoded-block deletions safe.
 - [ ] **Step 4 — delete out-of-scope models**: `HermiteMomentEquations`,
       `VegetationSWME1D`, adaptive/`Micro_macro` simulation classes, matching `plotting.py`
       classes, `main_HME_errorChecks.py`, `main_SWME_errorData.py`,
-      `recharge/source_terms.py`, `symbolic_math/`, affected `config/` subdirs.
+      `recharge/source_terms.py`, `symbolic_math/`.
+      **Also, per user directive**: wipe `config/` down to nothing (or one minimal
+      canonical example) — delete `config/ConfigHME1D/`, `config/Config Micro-Macro/`,
+      `config/ConfigSWME1D/`, `config/Config_Cyril-honoursProject/`, and the current
+      `config/config.txt` itself, so the config directory starts clean for the new
+      format (see the config-format decision recorded below) rather than accumulating
+      stale examples for deleted models.
+      **Also (pending final confirmation, see chat)**: delete `matlab/` in its entirety —
+      nothing in it is needed; see the write-up in the conversation for the full
+      reasoning. If confirmed, add it to this step's deletion list; if the user wants it
+      kept for provenance/citation reasons, mark it explicitly "kept, intentionally
+      untouched" here instead and remove this TODO.
 - [ ] **Step 5 — topography + well-balancing**: `mesh.py` bed elevation field, augmented
       `(U,Z)` path in `spatialDiscretization.py`, wiring in `simulation.py`. Write the
       lake-at-rest regression test as part of this step, not after.
@@ -516,6 +612,26 @@ steps — they're what makes the hardcoded-block deletions safe.
 - [ ] **Step 8 — cleanup**: delete `requirements.txt`/`Makefile` once `uv` workflow is
       confirmed; update `README.md` (repo root and package-level) to describe the new
       layout, arbitrary-N support, topography/wet-dry usage, and `uv` quick-start.
+- [ ] **Step 9 — documentation site (mkdocs)**: added per user request, appended after
+      the (previously) final step. Scope:
+        - Add `mkdocs`, `mkdocs-material`, `mkdocstrings[python]` as a new `docs`
+          dependency group in `pyproject.toml` (`uv sync --group docs` to install).
+        - `mkdocs.yml` at repo root, `docs/` directory with at minimum: an index/landing
+          page (repo purpose, thesis link/context), a "Quick start" page (mirrors the
+          root `README.md`'s command list, kept in sync rather than duplicated where
+          possible — consider having the README be the canonical source and the mkdocs
+          page `include`/reference it, or accept light duplication if that's simpler to
+          maintain), a "Model overview" page (SWME/HSWME/RechargeSWME, arbitrary-N
+          coefficients engine, well-balanced + wet-dry treatment — largely adapted from
+          this plan's §1/§2 once implemented), a "Configuration reference" page
+          (documenting the config format decided below), and an API-reference section
+          generated via `mkdocstrings` from docstrings in `src/` (whatever the final
+          package name(s) turn out to be, see the naming decision below).
+        - `uv run mkdocs serve` for local preview, `uv run mkdocs build` for a static
+          `site/` (gitignore `site/`).
+        - Do this step *after* Steps 0–8 land (package renamed if applicable, CLI
+          finalized, physics complete) so the docs describe the actual final structure
+          rather than needing a rewrite partway through.
 
 ## Open items intentionally left for implementation time (not blocking this plan)
 

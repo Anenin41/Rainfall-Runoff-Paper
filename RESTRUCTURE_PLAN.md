@@ -6,15 +6,15 @@ historical title context in the note above rather than rewriting every prose men
 `moment_sw` throughout §1-4, which describe design decisions made before the rename and
 are unaffected by it — see decision #5 for the mapping.)*
 
-**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, and 2 complete: scaffolding,
-coefficients engine, package rename/config cleanup, and the full regression-test suite
-(185 tests) proving generic-N implementations of the system matrix, base Navier-slip
-friction, and recharge mass-source/mixing-friction match the legacy hardcoded code (with
-two real bugs found and fixed along the way — see Step 2's entry below). The generic
-implementations exist and are tested but are NOT YET WIRED IN — `pde.py`/
-`recharge/recharge_pde.py` still run their original hardcoded code paths unchanged (the
-end-to-end solver run is byte-for-byte identical to before Step 2). Step 3 (actually
-wiring the generic engine in and deleting the hardcoded blocks) is next.**
+**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, 2 and 3 complete. The solver now
+genuinely runs on the arbitrary-N generic engine: all hardcoded per-order blocks are
+deleted (`pde.py` 5034 → 2949 lines, `recharge/source_terms.py` 933 → 102), the
+`RechargeSWME1D` N ∈ {0,1,2} cap is gone, and 303 tests pass against golden reference
+values captured from the legacy code before deleting it. Two real bugs were found and
+fixed on the way (see Steps 2/3), and Step 3 carries a documented ~1.7x runtime cost with
+an identified follow-up. Step 4 (deleting the out-of-scope models: `HermiteMomentEquations`,
+`VegetationSWME1D`, the adaptive/`Micro_macro` simulation classes, `symbolic_math/`) is
+next.**
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -742,6 +742,61 @@ steps — they're what makes the hardcoded-block deletions safe.
       `_evaluate_rainfall_and_infiltration` (keep the file itself — it now holds the generic
       functions, see the corrected §1 "Module consumption" above). Fix the
       `PDE.compute_source_term` ABC signature to include `delta_t`.
+      **DONE.** All of the above executed. Sizes: `pde.py` 5034 → 2949 lines
+      (−2085); `recharge/source_terms.py` 933 → 102 lines (−831); together ~2900 lines of
+      hand-transcribed per-order polynomials replaced by ~480 lines of generic engine
+      (`coefficients.py` 358 + `swme/source_terms.py` 123). `RechargeSWME1D` gained an
+      `eps_dry` constructor parameter (the machine-precision division guard inherited from
+      the deleted legacy source terms — explicitly NOT the physical dry threshold, which
+      arrives in Step 6) and now handles arbitrary N. `recharge/__init__.py` was rewritten:
+      it had a broken export list (`__all__` advertised `RechargeSWME1D` while the import
+      was commented out, and it re-exported the now-deleted `compute_recharge_source`).
+
+      **Golden-fixture safety net (addition to the original plan).** §3 said to keep the
+      old code reachable "only until this suite passes, then delete for real", which would
+      have left the post-deletion tree with no reference to regress against. Instead, before
+      deleting, the legacy outputs were captured to `tests/data/legacy_golden.npz` (126
+      arrays) and `tests/data/legacy_recharge_golden.npz` (30 arrays), and both regression
+      suites were rewritten to check the generic implementations against those captured
+      values. The safety net therefore survives the deletion permanently rather than
+      evaporating with it. N=6 system-matrix goldens were captured from the *generic*
+      implementation, since the legacy N=6 block is the one known to be buggy (Step 2); every
+      other golden came from the legacy code. Both test files document this provenance in
+      their module docstrings, including a "do not regenerate these" warning.
+      Suite grew 185 → 303 tests, all passing, and now also covers: the wired
+      `SWME1D`/`RechargeSWME1D` methods (not just the free functions), retention of
+      `compute_system_matrix`'s input validation, arbitrary N beyond the legacy caps
+      (N=7,8,10 for swme; N=3..8 for recharge), and that `R=I=f_R=f_I=0` collapses recharge
+      exactly onto the base model.
+
+      **Numerics**: the end-to-end reference run's `total mass` moved from
+      `242.14363128962492` to `242.1436312896249` — a **1 ULP** difference (relative
+      1.2e-16), i.e. pure floating-point round-off from a different order of operations in
+      mathematically identical formulas. Not a behavior change. (Note that an N=6 run's
+      numbers *would* legitimately change more than this, since the legacy N=6 block was
+      wrong; the reference config is N=1.)
+
+      **Performance regression — known, partially mitigated, documented.** Replacing
+      inlined scalar arithmetic with numpy array expressions cost real wall-clock time on
+      the reference run: 36s (legacy) → 94s (first generic version) → **60s** after
+      optimization. What the optimization did: precomputed the moment-block slices and the
+      `2*A_m + B_m` combination once per order into the `Coefficients` dataclass (`A_m`,
+      `transport_m`, `C_m`, `E_m`, `F_m`, `r_m`, `s_m`, `phi1_m`, `phi0_m`, `two_i_plus_1`,
+      `inv_two_i_plus_1`) instead of re-slicing per call; replaced `np.einsum` with
+      BLAS-backed `@` dots; dropped a redundant `.astype` copy; replaced
+      `np.diag_indices` (which calls `arange` every time) with a flat-stride diagonal
+      update; and switched `np.all(np.isfinite(x))` to `np.isfinite(x).all()`.
+      The residual ~1.7x is **not** algorithmic — profiling attributes essentially all of
+      it to per-call numpy dispatch overhead (~2-5 µs × ~12 array operations) on the tiny
+      (3,) and (3,3) arrays of an N=1 model, where the actual arithmetic is nanoseconds.
+      It will shrink in relative terms as N grows. The real fix is **not** to reintroduce
+      per-order scalar code but to batch the state over cells so one numpy call covers the
+      whole grid instead of one call per cell per quadrature point — that is a
+      `simulation.py`/`spatialDiscretization.py` refactor, would speed up the legacy
+      structure too, and is deliberately out of scope here. Recorded as a follow-up in
+      "Open items" below. Trading ~1.7x on a research solver for arbitrary-N support and
+      2900 fewer lines of unmaintainable transcribed polynomials is the intended bargain,
+      but it is a real cost and should not be discovered later by surprise.
 - [ ] **Step 4 — delete out-of-scope models**: `HermiteMomentEquations`,
       `VegetationSWME1D`, adaptive/`Micro_macro` simulation classes, matching `plotting.py`
       classes, `main_HME_errorChecks.py`, `main_SWME_errorData.py`, `symbolic_math/`.
@@ -801,3 +856,13 @@ steps — they're what makes the hardcoded-block deletions safe.
   itself becomes physically questionable, independent of the coefficient engine's own
   performance) — worth documenting explicitly once arbitrary N is live, not enforcing as a
   hard cap.
+- **Batch/vectorize the state over cells** (identified during Step 3's performance work).
+  The solver currently calls `compute_system_matrix` once per cell interface per Gauss
+  quadrature point per timestep, on arrays of size (N+2). At small N the per-call numpy
+  dispatch overhead dominates the arithmetic by orders of magnitude — this is why the
+  generic engine runs ~1.7x slower than the inlined-scalar legacy code it replaced (see
+  Step 3). Restructuring `simulation.py`/`spatialDiscretization.py` to evaluate the whole
+  grid in one batch of numpy calls would remove that overhead entirely and would have
+  sped up the legacy structure too. Sizeable refactor of the time loop; deliberately not
+  bundled into this restructure, but it is the correct answer to the performance question
+  and worth doing before any large production runs.

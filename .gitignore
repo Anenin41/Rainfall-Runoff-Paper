@@ -30,6 +30,12 @@ __pycache__/
 *.csv
 *.jpg
 *.jpeg
+data/
+
+# ...but the test golden fixtures ARE source, not generated output: they hold
+# reference values captured from the pre-refactor solver and the regression
+# suite fails to even import without them (see tests/test_pde_regression.py).
+!tests/data/
 
 # ignore language auxiliary files
 ## Python

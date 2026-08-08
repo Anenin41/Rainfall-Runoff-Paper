@@ -64,6 +64,27 @@ class Coefficients:
         Basis endpoint values at the free surface, phi_i(1) = (-1)^i.
     phi_at_0 : np.ndarray, shape (N+1,)
         Basis endpoint values at the wet boundary, phi_i(0) = 1.
+
+    The remaining `*_m` attributes are precomputed moment-block views/products
+    (indices 1..N only, i.e. the physical moment variables, with index 0
+    dropped). They exist purely so the solver's hot paths - which evaluate the
+    system matrix and source terms per quadrature point, per interface, per
+    time step - do not re-slice or re-combine these arrays on every call.
+    Slicing and `2*A + B` are cheap individually but not free at that call
+    frequency; see RESTRUCTURE_PLAN.md Step 3's performance note.
+
+    two_i_plus_1, inv_two_i_plus_1 : np.ndarray, shape (N,)
+        The (2i+1) normalization weights for i = 1..N, and their reciprocals
+        (precomputed so hot paths multiply rather than divide).
+    A_m, B_m : np.ndarray, shape (N, N, N)
+        Moment blocks A[1:,1:,1:], B[1:,1:,1:].
+    transport_m : np.ndarray, shape (N, N, N)
+        Precomputed 2*A_m + B_m, the combination appearing in the moment-block
+        of the system matrix.
+    C_m, E_m, F_m : np.ndarray, shape (N, N)
+        Moment blocks C[1:,1:], E[1:,1:], F[1:,1:].
+    r_m, s_m, phi1_m, phi0_m : np.ndarray, shape (N,)
+        Moment blocks r[1:], s[1:], phi_at_1[1:], phi_at_0[1:].
     """
 
     N: int
@@ -76,6 +97,18 @@ class Coefficients:
     s: np.ndarray
     phi_at_1: np.ndarray
     phi_at_0: np.ndarray
+    two_i_plus_1: np.ndarray
+    inv_two_i_plus_1: np.ndarray
+    A_m: np.ndarray
+    B_m: np.ndarray
+    transport_m: np.ndarray
+    C_m: np.ndarray
+    E_m: np.ndarray
+    F_m: np.ndarray
+    r_m: np.ndarray
+    s_m: np.ndarray
+    phi1_m: np.ndarray
+    phi0_m: np.ndarray
 
 
 # ============================================================================ #
@@ -264,8 +297,33 @@ def get_coefficients(N: int) -> Coefficients:
             E[i, j] = (-1.0) ** (i + j)
             F[i, j] = 1.0
 
+    # Precomputed moment-block views/products for the solver's hot paths.
+    # np.ascontiguousarray so the slices are contiguous for BLAS-backed dots.
+    A_m = np.ascontiguousarray(A[1:, 1:, 1:])
+    B_m = np.ascontiguousarray(B[1:, 1:, 1:])
     return Coefficients(
-        N=N, A=A, B=B, C=C, E=E, F=F, r=r, s=s, phi_at_1=phi_at_1, phi_at_0=phi_at_0
+        N=N,
+        A=A,
+        B=B,
+        C=C,
+        E=E,
+        F=F,
+        r=r,
+        s=s,
+        phi_at_1=phi_at_1,
+        phi_at_0=phi_at_0,
+        two_i_plus_1=(2.0 * np.arange(1, N + 1) + 1.0),
+        inv_two_i_plus_1=1.0 / (2.0 * np.arange(1, N + 1) + 1.0),
+        A_m=A_m,
+        B_m=B_m,
+        transport_m=np.ascontiguousarray(2.0 * A_m + B_m),
+        C_m=np.ascontiguousarray(C[1:, 1:]),
+        E_m=np.ascontiguousarray(E[1:, 1:]),
+        F_m=np.ascontiguousarray(F[1:, 1:]),
+        r_m=np.ascontiguousarray(r[1:]),
+        s_m=np.ascontiguousarray(s[1:]),
+        phi1_m=np.ascontiguousarray(phi_at_1[1:]),
+        phi0_m=np.ascontiguousarray(phi_at_0[1:]),
     )
 
 

@@ -49,10 +49,8 @@ def reconstruct_boundary_velocities(order: int, values: np.ndarray, eps_div: flo
 
     alpha = values[2:] / h_reg
     c = coefficients.get_coefficients(order)
-    phi1 = c.phi_at_1[1:]  # phi_i(1), i=1..N
-    phi0 = c.phi_at_0[1:]  # phi_i(0), i=1..N
-    u_s = um + np.dot(alpha, phi1)
-    u_b = um + np.dot(alpha, phi0)
+    u_s = um + alpha @ c.phi1_m
+    u_b = um + alpha @ c.phi0_m
     return h, um, alpha, u_s, u_b
 
 
@@ -86,14 +84,9 @@ def compute_navier_slip_friction(
     if order >= 1:
         h_reg = h if h > eps_div else eps_div
         c = coefficients.get_coefficients(order)
-        i_idx = np.arange(1, order + 1)
-        two_i_plus_1 = 2 * i_idx + 1
-        phi0 = c.phi_at_0[1:]
-        C_block = c.C[1:, 1:]
-
-        mixing = slip_term * phi0 * u_b
-        visc = (viscosity / h_reg**2) * (C_block @ values[2:])
-        P[2:] = two_i_plus_1 * mixing + two_i_plus_1 * visc
+        mixing = (slip_term * u_b) * c.phi0_m
+        visc = (viscosity / h_reg**2) * (c.C_m @ values[2:])
+        P[2:] = c.two_i_plus_1 * (mixing + visc)
 
     return P
 
@@ -118,16 +111,13 @@ def compute_friction_operator_matrix(
         return S
 
     c = coefficients.get_coefficients(order)
-    phi0 = c.phi_at_0[1:]  # phi_i(0), i=1..N
-    i_idx = np.arange(1, order + 1)
-    two_i_plus_1 = 2 * i_idx + 1
-    C_block = c.C[1:, 1:]
+    phi0 = c.phi0_m  # phi_i(0), i=1..N
+    two_i_plus_1 = c.two_i_plus_1
 
     S[1, 1] = -slip_term
     S[1, 2:] = -slip_term * phi0
     S[2:, 1] = -two_i_plus_1 * slip_term * phi0
-    S[2:, 2:] = (
-        -two_i_plus_1[:, None] * slip_term * np.outer(phi0, phi0)
-        - two_i_plus_1[:, None] * (viscosity / h**2) * C_block
+    S[2:, 2:] = -two_i_plus_1[:, None] * (
+        slip_term * np.outer(phi0, phi0) + (viscosity / h**2) * c.C_m
     )
     return S

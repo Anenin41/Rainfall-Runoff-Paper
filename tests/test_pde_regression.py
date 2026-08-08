@@ -1,62 +1,55 @@
-"""Step 2 regression suite (RESTRUCTURE_PLAN.md): proves the new generic-N
-implementations (swme.pde._compute_system_matrix_generic,
-swme.source_terms.compute_generalized_friction,
-swme.source_terms.compute_friction_operator_matrix) reproduce the still-present
-hardcoded per-order blocks in SWME1D (compute_system_matrix, compute_source_term,
-_compute_source_matrix_inverse) for N=0..6, before Step 3 deletes the hardcoded
-blocks and wires the generic engine in.
+"""Regression suite pinning the generic-N swme implementations to the behavior
+of the legacy hardcoded per-order code that Step 3 deleted.
 
-This is the mandatory safety net described in RESTRUCTURE_PLAN.md §3: "write a
-parametrized regression test ... assert numerical equality ... keep old code
-reachable only until this suite passes for all six orders, then delete for
-real."
+HOW THIS WORKS (and why it still has teeth after the legacy code is gone):
+Step 2 proved, by direct comparison, that the generic implementations match the
+hardcoded `if order == 0/1/.../6:` blocks in `pde.py` for N=0..5 (and found the
+N=6 block to be buggy - see below). Before Step 3 deleted those blocks, their
+outputs were captured to `tests/data/legacy_golden.npz`. This suite now checks
+the generic implementations against that captured reference, so the safety net
+survives the deletion permanently: if anyone later breaks
+`_compute_system_matrix_generic`, `compute_navier_slip_friction`, or
+`compute_friction_operator_matrix`, these tests fail against values that were
+independently validated against the original Mathematica-derived code.
 
-One genuine discrepancy was found and is deliberately NOT hidden: the
-hardcoded order=6 system matrix has a copy-paste bug at A[1][7] (pde.py, uses
-alpha5 where the established pattern - and every other order - requires
-alpha6). See test_order6_A17_is_a_known_legacy_bug below.
+N=6 CAVEAT: the legacy order==6 system-matrix block disagreed with the generic
+implementation at 22 of 64 entries - not a generic-implementation bug (ruled
+out by the order-reduction consistency check below, which needs no legacy code
+at all, plus the independent coefficient-tensor tests in test_coefficients.py),
+but hand-transcription errors in the legacy block's ~90 dense polynomial
+entries, the most obvious being `A[1][7] = (2*alpha5)/13.` where every other
+order follows `A[1][i+1] = 2*alpha_i/(2i+1)` (i.e. it should be alpha6). The
+N=6 system-matrix goldens were therefore captured from the GENERIC
+implementation, not the legacy one; every other golden (all orders' friction
+vectors and friction-operator inverses, and N=0..5 system matrices) came from
+the legacy code. See RESTRUCTURE_PLAN.md Step 2/3.
+
+REGENERATING THE GOLDENS: don't, unless you have deliberately changed the
+physics. The whole point is that they encode the pre-refactor reference. Their
+provenance is the legacy code, which no longer exists in the working tree (see
+git history prior to the Step 3 commit).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from swme import coefficients as coeff
 from swme import source_terms
 from swme.pde import SWME1D, _compute_system_matrix_generic
 
-ORDERS = list(range(0, 7))  # N = 0..6, matching the hardcoded blocks' range
-N_SAMPLES = 8
+GOLDEN = np.load(Path(__file__).parent / "data" / "legacy_golden.npz")
+
+ORDERS = list(range(0, 7))
+VISC_SLIP = [(1e-3, 1.0), (5e-2, 0.3), (2.0, 4.0)]
+DTS = [1e-4, 1e-2, 0.5]
 SEED = 20260808
 
 
-def _make_pde(hyperbolic=False, linear_source=False, viscosity=1e-3, slip_length=1.0):
-    return SWME1D(
-        initial_condition="unused_by_these_methods",
-        viscosity=viscosity,
-        slip_length=slip_length,
-        hyperbolic=hyperbolic,
-        linear_source=linear_source,
-    )
-
-
-def _random_state(order, rng, h_range=(0.4, 2.5), vel_scale=0.6):
-    n = order + 2
-    values = np.empty(n, dtype=np.float64)
-    h = rng.uniform(*h_range)
-    um = rng.uniform(-vel_scale, vel_scale)
-    values[0] = h
-    values[1] = h * um
-    if order > 0:
-        alpha = rng.uniform(-vel_scale, vel_scale, size=order)
-        values[2:] = h * alpha
-    return values
-
-
-def _random_states(order, n_samples=N_SAMPLES, seed=SEED):
-    rng = np.random.default_rng(seed + order)
-    return [_random_state(order, rng) for _ in range(n_samples)]
+def _states(order):
+    return GOLDEN[f"states_{order}"]
 
 
 # ============================================================================ #
@@ -64,101 +57,98 @@ def _random_states(order, n_samples=N_SAMPLES, seed=SEED):
 # ============================================================================ #
 
 
-LEGACY_RELIABLE_ORDERS = [0, 1, 2, 3, 4, 5]  # order=6 is excluded, see below
-
-
-@pytest.mark.parametrize("order", LEGACY_RELIABLE_ORDERS)
+@pytest.mark.parametrize("order", ORDERS)
 @pytest.mark.parametrize("hyperbolic", [False, True])
-def test_system_matrix_matches_legacy(order, hyperbolic):
-    """Exact match against the hardcoded pde.py blocks for order=0..5."""
-    pde = _make_pde(hyperbolic=hyperbolic)
-    for values in _random_states(order):
-        A_old = pde.compute_system_matrix(order, values)
+def test_system_matrix_matches_legacy_golden(order, hyperbolic):
+    expected = GOLDEN[f"A_{order}_{int(hyperbolic)}"]
+    for values, A_ref in zip(_states(order), expected):
         A_new = _compute_system_matrix_generic(order, values, hyperbolic=hyperbolic)
-        assert np.allclose(A_old, A_new, atol=1e-10, rtol=1e-10)
+        assert np.allclose(A_new, A_ref, atol=1e-10, rtol=1e-10)
 
 
-def test_order6_legacy_block_disagrees_at_multiple_entries():
-    """Documents a real finding rather than hiding it (see module docstring).
-
-    order=0..5 match the generic implementation exactly (see
-    test_system_matrix_matches_legacy) and the generic implementation is
-    independently self-consistent (see
-    test_system_matrix_order_reduction_consistency below, which needs no
-    legacy code at all). That rules out a bug in the generic implementation.
-    Yet pde.py's order==6 block disagrees with it at 22 of the 64 entries
-    (reproducible with this test's own seed, checked below) - not just the
-    single expected A[1][7] copy-paste bug (`(2*alpha5)/13.` instead of
-    `(2*alpha6)/13.`,
-    the one place the bug is unambiguously diagnosable by inspection since it
-    breaks the otherwise-universal pattern A[1][i+1]=2*alpha_i/(2i+1)). The
-    order==6 block is simply unreliable as a correctness reference - almost
-    certainly further hand-transcription errors in its ~90 dense polynomial
-    entries. Conclusion: do not attempt to reproduce order=6 bug-for-bug;
-    trust the generic implementation there (backed by the independent
-    coefficient-tensor tests in test_coefficients.py and the reduction-
-    consistency test below), and let Step 3 delete the order==6 block
-    entirely rather than "fix" it to match - there's nothing to preserve.
-    """
-    pde = _make_pde()
-    rng = np.random.default_rng(SEED + 6)
-    values = _random_state(6, rng)
-
-    A_old = pde.compute_system_matrix(6, values)
-    A_new = _compute_system_matrix_generic(6, values)
-    mismatches = np.sum(~np.isclose(A_old, A_new, atol=1e-10, rtol=1e-10))
-
-    assert mismatches > 1, (
-        "Expected multiple legacy discrepancies at order=6, found "
-        f"{mismatches}; if pde.py's order==6 block changed, re-verify this "
-        "finding rather than silently updating the count."
-    )
-
-    # The one entry diagnosable by inspection (pattern break), confirmed:
-    assert not np.isclose(A_old[1, 7], A_new[1, 7])
-    expected_alpha6_based = 2.0 * (values[7] / values[0]) / 13.0
-    assert A_new[1, 7] == pytest.approx(expected_alpha6_based)
+@pytest.mark.parametrize("order", ORDERS)
+@pytest.mark.parametrize("hyperbolic", [False, True])
+def test_system_matrix_via_pde_class_matches_generic(order, hyperbolic):
+    """SWME1D.compute_system_matrix must now BE the generic implementation
+    (Step 3 wiring), including its input validation still firing."""
+    pde = SWME1D("unused", 1e-3, 1.0, hyperbolic, False)
+    for values in _states(order):
+        assert np.allclose(
+            pde.compute_system_matrix(order, values),
+            _compute_system_matrix_generic(order, values, hyperbolic=hyperbolic),
+            atol=1e-12,
+            rtol=1e-12,
+        )
 
 
 @pytest.mark.parametrize("order", [1, 2, 3, 4, 5, 6])
 @pytest.mark.parametrize("hyperbolic", [False, True])
 def test_system_matrix_order_reduction_consistency(order, hyperbolic):
-    """Independent correctness evidence, needing no legacy code at all
-    (this is what backs order=6's correctness, since the legacy order=6
-    block is unreliable - see test above): A_ijk/B_ijk depend only on the
-    basis functions phi_i for i<=max(i,j,k), not on the truncation order N,
-    so the generic system matrix at order N with alpha_N set to 0 must
-    exactly reproduce the order (N-1) matrix on their shared (N+1)x(N+1)
-    block, for any lower-order state.
+    """Independent correctness evidence needing no legacy code or goldens at
+    all (this is what backs N=6, where the legacy block was buggy): A_ijk and
+    B_ijk depend only on the basis functions involved, not on the truncation
+    order N, so the generic system matrix at order N with alpha_N = 0 must
+    exactly reproduce the order (N-1) matrix on their shared block.
     """
     rng = np.random.default_rng(SEED + 300 + order)
-    lower = _random_state(order - 1, rng)
+    n_low = order + 1
+    lower = np.empty(n_low)
+    h = rng.uniform(0.4, 2.5)
+    lower[0] = h
+    lower[1] = h * rng.uniform(-0.6, 0.6)
+    if order - 1 > 0:
+        lower[2:] = h * rng.uniform(-0.6, 0.6, size=order - 1)
 
-    higher = np.zeros(order + 2, dtype=np.float64)
-    higher[: order + 1] = lower  # same h, u_m, alpha_1..alpha_{N-1}; alpha_N = 0
+    higher = np.zeros(order + 2)
+    higher[:n_low] = lower  # same h, u_m, alpha_1..alpha_{N-1}; alpha_N = 0
 
     A_lower = _compute_system_matrix_generic(order - 1, lower, hyperbolic=hyperbolic)
     A_higher = _compute_system_matrix_generic(order, higher, hyperbolic=hyperbolic)
+    assert np.allclose(A_lower, A_higher[:n_low, :n_low], atol=1e-10, rtol=1e-10)
 
-    assert np.allclose(A_lower, A_higher[: order + 1, : order + 1], atol=1e-10, rtol=1e-10)
+
+def test_system_matrix_validation_still_rejects_bad_input():
+    """Input validation that the legacy compute_system_matrix performed must
+    survive the Step 3 rewrite."""
+    pde = SWME1D("unused", 1e-3, 1.0, False, False)
+    with pytest.raises(ValueError):
+        pde.compute_system_matrix(1, np.array([[1.0, 0.0, 0.0]]))  # not 1D
+    with pytest.raises(ValueError):
+        pde.compute_system_matrix(1, np.array([1.0, np.nan, 0.0]))  # non-finite
+    with pytest.raises(ValueError):
+        pde.compute_system_matrix(1, np.array([0.0, 0.0, 0.0]))  # h <= 0
 
 
 # ============================================================================ #
-# Friction source term (non-implicit branch)
+# Friction source term (explicit / vector branch)
 # ============================================================================ #
 
 
 @pytest.mark.parametrize("order", ORDERS)
-@pytest.mark.parametrize("viscosity,slip_length", [(1e-3, 1.0), (5e-2, 0.3), (2.0, 4.0)])
-def test_friction_vector_matches_legacy(order, viscosity, slip_length):
-    pde = _make_pde(linear_source=False, viscosity=viscosity, slip_length=slip_length)
-    for values in _random_states(order):
-        S_old = pde.compute_source_term(order, values, delta_t=1e-3)
+@pytest.mark.parametrize("k", range(len(VISC_SLIP)))
+def test_friction_vector_matches_legacy_golden(order, k):
+    viscosity, slip_length = VISC_SLIP[k]
+    expected = GOLDEN[f"S_{order}_{k}"]
+    for values, S_ref in zip(_states(order), expected):
         P_new = source_terms.compute_navier_slip_friction(
             order, values, viscosity=viscosity, slip_length=slip_length
         )
         # thesis eq. 3.38: source = S_{R,I}(U) - P(U); base SWME has S_{R,I}=0.
-        assert np.allclose(S_old, -P_new, atol=1e-9, rtol=1e-9)
+        assert np.allclose(-P_new, S_ref, atol=1e-9, rtol=1e-9)
+
+
+@pytest.mark.parametrize("order", ORDERS)
+@pytest.mark.parametrize("k", range(len(VISC_SLIP)))
+def test_friction_vector_via_pde_class_matches_golden(order, k):
+    """SWME1D.compute_source_term (explicit branch) must now BE the generic
+    implementation (Step 3 wiring)."""
+    viscosity, slip_length = VISC_SLIP[k]
+    pde = SWME1D("unused", viscosity, slip_length, False, False)
+    expected = GOLDEN[f"S_{order}_{k}"]
+    for values, S_ref in zip(_states(order), expected):
+        assert np.allclose(
+            pde.compute_source_term(order, values, delta_t=1e-3), S_ref, atol=1e-9, rtol=1e-9
+        )
 
 
 # ============================================================================ #
@@ -167,46 +157,89 @@ def test_friction_vector_matches_legacy(order, viscosity, slip_length):
 
 
 @pytest.mark.parametrize("order", ORDERS)
-@pytest.mark.parametrize("viscosity,slip_length", [(1e-3, 1.0), (5e-2, 0.3), (2.0, 4.0)])
-@pytest.mark.parametrize("delta_t", [1e-4, 1e-2, 0.5])
-def test_friction_operator_matrix_inverse_matches_legacy(order, viscosity, slip_length, delta_t):
-    pde = _make_pde(linear_source=True, viscosity=viscosity, slip_length=slip_length)
-    rng = np.random.default_rng(SEED + 100 + order)
-    h = rng.uniform(0.4, 2.5)
+@pytest.mark.parametrize("k", range(len(VISC_SLIP)))
+@pytest.mark.parametrize("m", range(len(DTS)))
+def test_friction_operator_matrix_inverse_matches_legacy_golden(order, k, m):
+    viscosity, slip_length = VISC_SLIP[k]
+    delta_t = DTS[m]
+    hs = GOLDEN[f"h_{order}_{k}"]
+    expected = GOLDEN[f"Sinv_{order}_{k}_{m}"]
     n = order + 2
-    dummy_values = np.zeros(n, dtype=np.float64)
-    dummy_values[0] = h
+    for h, S_inv_ref in zip(hs, expected):
+        S = source_terms.compute_friction_operator_matrix(order, h, viscosity, slip_length)
+        S_inv_new = np.linalg.inv(np.eye(n) - delta_t * S)
+        assert np.allclose(S_inv_new, S_inv_ref, atol=1e-8, rtol=1e-8)
 
-    S_inv_old = pde._compute_source_matrix_inverse(order, dummy_values, delta_t)
 
-    S_new = source_terms.compute_friction_operator_matrix(order, h, viscosity, slip_length)
-    S_inv_new = np.linalg.inv(np.eye(n) - delta_t * S_new)
-
-    assert np.allclose(S_inv_old, S_inv_new, atol=1e-8, rtol=1e-8)
+@pytest.mark.parametrize("order", ORDERS)
+@pytest.mark.parametrize("k", range(len(VISC_SLIP)))
+@pytest.mark.parametrize("m", range(len(DTS)))
+def test_matrix_inverse_via_pde_class_matches_golden(order, k, m):
+    """SWME1D._compute_source_matrix_inverse must now BE the generic runtime
+    solve (Step 3 wiring), replacing ~1700 lines of Mathematica-derived
+    closed forms."""
+    viscosity, slip_length = VISC_SLIP[k]
+    delta_t = DTS[m]
+    pde = SWME1D("unused", viscosity, slip_length, False, True)
+    hs = GOLDEN[f"h_{order}_{k}"]
+    expected = GOLDEN[f"Sinv_{order}_{k}_{m}"]
+    for h, S_inv_ref in zip(hs, expected):
+        dummy = np.zeros(order + 2)
+        dummy[0] = h
+        assert np.allclose(
+            pde._compute_source_matrix_inverse(order, dummy, delta_t),
+            S_inv_ref,
+            atol=1e-8,
+            rtol=1e-8,
+        )
 
 
 @pytest.mark.parametrize("order", ORDERS)
 def test_friction_operator_matrix_is_consistent_with_friction_vector(order):
-    """Cross-check: linearizing compute_navier_slip_friction in the conserved
-    state at fixed h must reproduce compute_friction_operator_matrix exactly,
-    since the base friction term is genuinely linear in U at fixed h.
+    """Independent structural check (no goldens): linearizing
+    compute_navier_slip_friction in the conserved state at fixed h must
+    reproduce compute_friction_operator_matrix exactly, since the base
+    friction term is genuinely linear in U at fixed h.
     """
     rng = np.random.default_rng(SEED + 200 + order)
     h = rng.uniform(0.4, 2.5)
     viscosity, slip_length = 7e-3, 0.6
     n = order + 2
-
     S = source_terms.compute_friction_operator_matrix(order, h, viscosity, slip_length)
 
     for _ in range(4):
-        w = np.zeros(n, dtype=np.float64)
+        w = np.zeros(n)
         w[0] = h
-        if order > 0:
-            w[1:] = rng.uniform(-0.5, 0.5, size=n - 1)
-        else:
-            w[1] = rng.uniform(-0.5, 0.5)
-
+        w[1:] = rng.uniform(-0.5, 0.5, size=n - 1)
         minus_P = -source_terms.compute_navier_slip_friction(
             order, w, viscosity=viscosity, slip_length=slip_length
         )
         assert np.allclose(S @ w, minus_P, atol=1e-9, rtol=1e-9)
+
+
+# ============================================================================ #
+# Arbitrary N beyond the legacy cap
+# ============================================================================ #
+
+
+@pytest.mark.parametrize("order", [7, 8, 10])
+def test_generic_swme_runs_beyond_legacy_cap(order):
+    """The legacy hardcoded blocks stopped at N=6 (silently returning a zero
+    matrix above it). Arbitrary N is the point of this restructure."""
+    rng = np.random.default_rng(SEED + 800 + order)
+    h = rng.uniform(0.4, 2.5)
+    values = np.empty(order + 2)
+    values[0] = h
+    values[1] = h * rng.uniform(-0.6, 0.6)
+    values[2:] = h * rng.uniform(-0.6, 0.6, size=order)
+
+    A = _compute_system_matrix_generic(order, values)
+    P = source_terms.compute_navier_slip_friction(order, values, viscosity=1e-3, slip_length=1.0)
+    S = source_terms.compute_friction_operator_matrix(order, h, 1e-3, 1.0)
+
+    assert A.shape == (order + 2, order + 2)
+    assert P.shape == (order + 2,)
+    assert S.shape == (order + 2, order + 2)
+    assert np.all(np.isfinite(A)) and np.all(np.isfinite(P)) and np.all(np.isfinite(S))
+    # A must be non-trivial (the legacy code silently returned zeros above N=6)
+    assert np.any(A != 0.0)

@@ -2,7 +2,7 @@
 import numpy as np
 
 # Recharge module
-from recharge.recharge_pde import RechargeSWME1D
+from .recharge_pde import RechargeSWME1D
 
 class RechargeSWME1D_CustomIC(RechargeSWME1D):
     """

@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 import numpy as np
-import pde
-import mesh
-import spatialDiscretization
-import timeIntegration
+from . import pde
+from . import mesh
+from . import spatialDiscretization
+from . import timeIntegration
 from scipy.interpolate import BarycentricInterpolator
 
 class Simulation(ABC):

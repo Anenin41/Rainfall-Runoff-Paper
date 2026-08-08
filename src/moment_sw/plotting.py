@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 import numpy as np
 import matplotlib.pyplot as plt
-import pde
-import mesh
-import simulation
+from . import pde
+from . import mesh
+from . import simulation
 
 class Plotting(ABC):
 

@@ -2,9 +2,9 @@
 import numpy as np
 
 # Local imports
-from pde import SWME1D
-from recharge.context import SourceContext
-from recharge.source_terms import compute_total_source
+from ..pde import SWME1D
+from .context import SourceContext
+from .source_terms import compute_total_source
 
 class RechargeSWME1D(SWME1D):
     """

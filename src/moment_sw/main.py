@@ -1,21 +1,24 @@
 # Packages & Local Imports
-import simulation
-import pde
-import mesh
-import spatialDiscretization
-import timeIntegration
-import plotting
+from pathlib import Path
+from . import simulation
+from . import pde
+from . import mesh
+from . import spatialDiscretization
+from . import timeIntegration
+from . import plotting
 import pandas as pd
 import configparser
 import timeit
 
+_PACKAGE_DIR = Path(__file__).resolve().parent
+
 # Recharge Specific Imports. Everything is written as a try-except block to
 # avoid import errors in case the recharge module never merges with the main
-# branch. 
-try: 
+# branch.
+try:
     import os
-    from recharge.initial_conditions import RechargeSWME1D_CustomIC as RechargeSWME1D
-    from recharge.laws import (
+    from .recharge.initial_conditions import RechargeSWME1D_CustomIC as RechargeSWME1D
+    from .recharge.laws import (
         HortonInfiltration, ConstantInfiltration, AdmissibleMixingFriction,
     )
 
@@ -39,7 +42,7 @@ except ImportError:
 def main():
 
     config = configparser.ConfigParser()
-    config.read('config/config.txt')
+    config.read(_PACKAGE_DIR / 'config' / 'config.txt')
     pde_information = config['pde_information']
     grid_information = config['grid_information']
     numerical_method_information = config['numerical_method_information']

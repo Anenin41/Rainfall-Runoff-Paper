@@ -62,9 +62,9 @@ coupling = conservative
 # start_order = 0
 # order = 0
 
-# Run 2:
-# start_order = 1
-# order = 1
+# Run 2 (active):
+start_order = 1
+order = 1
 
 # Run 3:
 # start_order = 2

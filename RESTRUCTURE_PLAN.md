@@ -1,6 +1,6 @@
 # `moment_sw` Restructure Plan — Arbitrary-N, Well-Balanced, Wet-Dry SWME/HSWME/RechargeSWME Solver
 
-**Status: PLANNING COMPLETE, IMPLEMENTATION NOT STARTED.**
+**Status: IMPLEMENTATION IN PROGRESS — Step 0 (scaffolding) complete, Step 1 next.**
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -448,10 +448,47 @@ Work through this in order; each step should be a separately reviewable/testable
 Update the checkboxes as work lands. Do not skip the "write test against old code first"
 steps — they're what makes the hardcoded-block deletions safe.
 
-- [ ] **Step 0 — scaffolding**: create `pyproject.toml`, `src/moment_sw/` layout, move
+- [x] **Step 0 — scaffolding**: create `pyproject.toml`, `src/moment_sw/` layout, move
       existing files into it unchanged (pure move, no logic changes yet), get `uv sync` +
       a trivial existing config running end-to-end through the new layout before touching
       any physics/numerics code. This isolates "packaging works" from "physics is correct".
+      **DONE.** `pyproject.toml` + `uv.lock` at repo root, `moment_sw/` moved to
+      `src/moment_sw/` via `git mv` (history preserved), root `.venv/` removed in favor of
+      `uv`-managed one. Two things had to be fixed beyond a pure move — neither is a
+      physics/numerics change, both are required for the package to import at all:
+        - Every intra-package module used flat, flat-namespace-style imports
+          (`import pde`, `from recharge.context import SourceContext`, etc.), which only
+          worked because the old flat `moment_sw/` directory was on `sys.path[0]` when run
+          as `python3 main.py` from inside it. These are now relative imports
+          (`from . import pde`, `from .context import SourceContext`, `from ..pde import
+          SWME1D`). Fixed in: `main.py`, `plotting.py`, `simulation.py`,
+          `recharge/recharge_pde.py`, `recharge/initial_conditions.py`. Added
+          `src/moment_sw/__init__.py` (was missing entirely).
+        - `mpmath` is imported in `spatialDiscretization.py` (present in the old
+          `requirements.txt` but omitted from the first `pyproject.toml` draft) — added to
+          `dependencies`. (It's also a transitive dep of `sympy`, so this was latent either
+          way, but declare it explicitly since it's imported directly.)
+        - `main.py`'s `config.read('config/config.txt')` was CWD-relative; changed to
+          resolve relative to the package file itself
+          (`Path(__file__).resolve().parent / 'config' / 'config.txt'`) so it works
+          regardless of where `uv run` is invoked from.
+        - `config/config.txt`'s `[numerical_method_information]` `order`/`start_order`
+          keys were commented out (all three "Run 1/2/3" options disabled) — this is a
+          pre-existing pattern of manually uncommenting one block per run, but with all
+          three commented, `method = classical` crashes on a missing config key. Uncommented
+          "Run 2" (`order = 1`) as the active default so the config is actually runnable;
+          leave the other two commented as before.
+      **Verified**: `uv sync` succeeds; `uv run python -c "import moment_sw.pde; ..."`
+      (all core + recharge submodules) succeeds; a full run of the existing
+      `RechargeSWME1D`/N=1/constant-exfiltration config via
+      `MPLBACKEND=Agg uv run python -m moment_sw.main` completes t_end=0.4 without errors
+      and writes the expected CSVs to `Data-processing/Results/Recharge/` (sane values,
+      e.g. `h≈1.06, u_m≈0.75, a1≈0.042` at the final snapshot). `MPLBACKEND=Agg` is only
+      needed because the VM this was run on is headless (`plt.show()` would otherwise
+      block/error) — not a code change, just how to invoke it in this environment.
+      `main_HME_errorChecks.py`/`main_SWME_errorData.py` were **not** import-fixed (still
+      using flat imports) since they're deleted wholesale in Step 4 — not worth fixing
+      dead-code-walking files.
 - [ ] **Step 1 — coefficients engine**: write `moment_sw/coefficients.py` (ported from
       `symbolic_math/symbo.py` + closed forms for r/s/E/F), with unit tests validating the
       closed forms against sympy integration for N=0..8.

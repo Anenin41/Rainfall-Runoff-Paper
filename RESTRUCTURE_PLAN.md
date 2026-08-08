@@ -6,11 +6,15 @@ historical title context in the note above rather than rewriting every prose men
 `moment_sw` throughout §1-4, which describe design decisions made before the rename and
 are unaffected by it — see decision #5 for the mapping.)*
 
-**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, and 1.5 complete: scaffolding,
-coefficients engine, and the package rename/config cleanup (`src/swme/` + `src/recharge/`
-sibling layout, `matlab/` deleted, `config/` wiped down to `config.ini` +
-`config/example.yaml` stub). Step 2 (regression tests against old hardcoded `pde.py`,
-comparing against `swme.pde`) is next.**
+**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, and 2 complete: scaffolding,
+coefficients engine, package rename/config cleanup, and the full regression-test suite
+(185 tests) proving generic-N implementations of the system matrix, base Navier-slip
+friction, and recharge mass-source/mixing-friction match the legacy hardcoded code (with
+two real bugs found and fixed along the way — see Step 2's entry below). The generic
+implementations exist and are tested but are NOT YET WIRED IN — `pde.py`/
+`recharge/recharge_pde.py` still run their original hardcoded code paths unchanged (the
+end-to-end solver run is byte-for-byte identical to before Step 2). Step 3 (actually
+wiring the generic engine in and deleting the hardcoded blocks) is next.**
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -192,7 +196,11 @@ Recharge mass source `S_{R,I}(U)` (zero when `R=I=0`, i.e. plain SWME/HSWME):
 S[0] = R - I
 S[1] = R*u_s - I*u_b
 S[i+2] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
-         + (2i+1)*I*(-phi_i(0)*u_b + u_m*s_i - sum_j F[i,j]*alpha_j)     # i = 1..N
+         + (2i+1)*I*(-phi_i(0)*u_b + u_m*s_i + sum_j F[i,j]*alpha_j)     # i = 1..N
+# CORRECTED during Step 2 (was documented with a minus sign here originally;
+# the minus-sign version failed regression tests against the legacy N=1/N=2
+# code and was traced to a transcription error against the thesis formula,
+# not a legacy bug - see tests/test_recharge_regression.py).
 ```
 
 Bed-slope source `B(U,Z)`: `B[1] = g*h*dZ/dx`, all other entries 0 (see §3 for how this is
@@ -201,34 +209,69 @@ augmented-path design).
 
 ### Module consumption
 
-- `pde.py`'s `SWME1D.compute_system_matrix` becomes ~15 lines calling
-  `coefficients.get_coefficients(order)` and doing the einsum contractions above, replacing
-  the ~300-line hardcoded block. The `hyperbolic` (HSWME) flag stays a boolean constructor
-  arg; formalize it as a single private helper `_closure_alpha(order, alpha)` that zeroes
-  `alpha[1:]` (i.e. `alpha_2..alpha_N`, never `alpha_1`) when `hyperbolic=True`, called once
-  inside `compute_system_matrix`. Do not turn this into a strategy-object hierarchy — it's
-  a one-line conditional.
-- **New shared module `moment_sw/source_terms.py`** (promoted out of `recharge/`, since
-  per the cross-validated finding above it is not recharge-specific):
+**Superseded/refined during Step 2 by a package-boundary correction — this is the
+current design.** The original draft below put a single combined
+`compute_generalized_friction(order, values, f_R, f_I, ...)` function in one new
+`moment_sw/source_terms.py` module, parametrized by `f_R, f_I` (which default to 0 for
+plain SWME). That is mathematically fine (and was cross-validated correct — see §0) but
+**violates the swme/recharge package boundary**: `swme/` should contain only the base
+SWME/HSWME model's own physics (transport *and* its own Navier-slip friction, since that
+exists with or without the recharge extension), while `recharge/` should contain only what
+the recharge extension actually *adds* — the rainfall/infiltration mass source `S_{R,I}(U)`
+and the mixing-friction contribution `P_mix(U)` (the `f_R, f_I`-dependent terms, which are
+meaningless without recharge). Corrected split (implemented in Step 2):
+
+- `swme/source_terms.py`:
   ```python
-  def compute_generalized_friction(order, values, f_R, f_I, viscosity, slip_length, eps_div=1e-8) -> np.ndarray: ...
-  def compute_recharge_mass_source(order, values, R, I, eps_div=1e-8) -> np.ndarray: ...
-  def compute_friction_operator_matrix(order, h, viscosity, slip_length) -> np.ndarray: ...
+  def reconstruct_boundary_velocities(order, values, eps_div=1e-12): ...  # -> (h, u_m, alpha, u_s, u_b)
+  def compute_navier_slip_friction(order, values, viscosity, slip_length, eps_div=1e-12) -> np.ndarray: ...  # P_slip(U)
+  def compute_friction_operator_matrix(order, h, viscosity, slip_length) -> np.ndarray: ...  # S_slip(h)
   ```
-  `SWME1D.compute_source_term` calls `compute_generalized_friction(..., f_R=0, f_I=0, ...)`.
+  `SWME1D.compute_source_term` (plain SWME/HSWME, no recharge) returns
+  `-compute_navier_slip_friction(...)`.
+- `recharge/source_terms.py` (kept — NOT deleted; its N=0/1/2 hardcoded functions are what
+  get replaced/removed in Step 3/4, but the file itself stays as the home for the
+  recharge-specific generic functions):
+  ```python
+  def compute_recharge_mass_source(order, values, R, I, eps_div=1e-14) -> np.ndarray: ...  # S_{R,I}(U)
+  def compute_mixing_friction(order, values, f_R, f_I, eps_div=1e-14) -> np.ndarray: ...  # P_mix(U)
+  def compute_total_friction(order, values, f_R, f_I, viscosity, slip_length, eps_div=1e-14) -> np.ndarray: ...
+      # = swme.source_terms.compute_navier_slip_friction(...) + compute_mixing_friction(...)
+  ```
   `RechargeSWME1D.compute_source_term` evaluates `R, I, f_R, f_I` from its closures, then
-  returns `compute_recharge_mass_source(...) - compute_generalized_friction(...)`.
-  `recharge/source_terms.py`'s five order-specific functions and both dispatchers are
-  deleted outright; delete the file. `RechargeSWME1D`'s `NotImplementedError` for
-  `order not in (0,1,2)` disappears entirely — arbitrary N is now a free consequence.
+  returns `compute_recharge_mass_source(...) - compute_total_friction(...)`.
+  `recharge/source_terms.py`'s five order-specific functions (`compute_recharge_source_n0/
+  n1/n2`, `compute_friction_matrix_n0/n1/n2`) and the three dispatchers
+  (`compute_recharge_source`, `compute_friction_matrix`, `compute_total_source`) are deleted
+  in Step 3/4 once the generic functions are wired in — see Step 2's regression suite below,
+  which validates the generic functions against exactly these before that deletion.
+  `RechargeSWME1D`'s `NotImplementedError` for `order not in (0,1,2)` disappears entirely —
+  arbitrary N is now a free consequence.
+  `pde.py`'s `SWME1D.compute_system_matrix` becomes ~15 lines calling
+  `coefficients.get_coefficients(order)` and doing the einsum contractions given earlier in
+  this section, replacing the ~300-line hardcoded block (implemented in Step 2 as the
+  staged, tested-but-not-yet-wired `_compute_system_matrix_generic`; Step 3 does the actual
+  wiring/deletion). The `hyperbolic` (HSWME) flag stays a boolean constructor arg; formalize
+  it as a single private helper `_closure_alpha(order, alpha)` that zeroes `alpha[1:]` (i.e.
+  `alpha_2..alpha_N`, never `alpha_1`) when `hyperbolic=True`, called once inside
+  `compute_system_matrix`. Do not turn this into a strategy-object hierarchy — it's a
+  one-line conditional (this is exactly what `_compute_system_matrix_generic`'s `hyperbolic`
+  parameter already does).
 - `_compute_source_matrix_inverse` (~1700 lines, Mathematica-derived per-order closed-form
   implicit-Euler matrix) is **replaced**, not genericized-in-place: build the small
-  `(N+1)x(N+1)` friction operator matrix `S(h)` generically (linear in `alpha`, so it's
-  literally the Jacobian of `compute_generalized_friction`'s linear part, built from the
-  `C` tensor) and invert `(I - dt*S)` numerically via `np.linalg.solve` at runtime — one
-  small linear solve per cell per timestep, negligible next to the existing 5-point Gauss
-  quadrature per interface. **This single change removes ~1700 of `pde.py`'s ~4970 lines**
-  and is the highest-value simplification in the whole restructure.
+  `(N+1)x(N+1)` friction operator matrix `S(h)` generically (linear in the conserved state at
+  fixed h, so it's literally the Jacobian of `compute_navier_slip_friction`'s linear map,
+  built from the `C` tensor — implemented and regression-tested in Step 2 as
+  `swme.source_terms.compute_friction_operator_matrix`) and invert `(I - dt*S)` numerically
+  via `np.linalg.inv`/`solve` at runtime — one small linear solve per cell per timestep,
+  negligible next to the existing 5-point Gauss quadrature per interface. **This single
+  change removes ~1700 of `pde.py`'s ~4970 lines** and is the highest-value simplification in
+  the whole restructure. (Note: the *recharge* extension currently has no implicit/linear-
+  source path at all in the legacy code — `RechargeSWME1D.compute_source_term` always uses
+  the explicit vector form regardless of `linear_source` — so there is nothing to
+  regression-test there; a `recharge`-side friction operator matrix, combining
+  `swme`'s Navier-slip operator with an analogous linear mixing-friction operator, would be
+  new functionality, not a Step 2/3 requirement, if ever wanted.)
 - Fix the `PDE.compute_source_term` abstract signature to match reality: every concrete
   override and every call site (`simulation.py`) already passes `(order, values, delta_t)`
   — the ABC currently only declares `(order, values)`. Fix the ABC declaration to include
@@ -314,7 +357,8 @@ run; the thesis's test cases use `h ~ O(1)`, so something like `h_dry = 1e-4`,
 
 **(b) Desingularized primitive reconstruction** (Kurganov–Petrova style), applied only
 where primitives are extracted for closure evaluation (`compute_system_matrix`,
-`compute_max_wavespeed`, `compute_generalized_friction`, `compute_recharge_mass_source`) —
+`compute_max_wavespeed`, `reconstruct_boundary_velocities`/`compute_navier_slip_friction`,
+`compute_recharge_mass_source`/`compute_mixing_friction`) —
 **never** applied to the conserved state array itself:
 ```
 h_reg = max(h, eps_div)
@@ -370,7 +414,7 @@ which is being rewritten anyway (see §5).
 | `plotting.py` | `SWME1DPlotAdaptive`, `HME1DPlotClassical`, `HME1DPlotAdaptive` | Keep only `SWME1DPlotClassical` (does not import/subclass anything being deleted). |
 | `main_HME_errorChecks.py`, `main_SWME_errorData.py` | entire files | Per user decision — drop, no replacement. |
 | `config/ConfigHME1D/`, `config/Config Micro-Macro/` | entire dirs | Only consumed by files/models being deleted. |
-| `recharge/source_terms.py` | entire file | Superseded by generic `moment_sw/source_terms.py` (§1); its one useful bit (dry-cell/eps convention) is folded into the new shared module. |
+| `recharge/source_terms.py` | ONLY the N=0/1/2 hardcoded functions and dispatchers (`compute_recharge_source_n0/n1/n2`, `compute_friction_matrix_n0/n1/n2`, `compute_recharge_source`, `compute_friction_matrix`, `compute_total_source`, `_evaluate_rainfall_and_infiltration`) | **Revised in Step 2**: the file itself is KEPT, not deleted — it now also holds the generic replacements (`compute_recharge_mass_source`, `compute_mixing_friction`, `compute_total_friction`), added in Step 2 alongside the old code for regression testing (`tests/test_recharge_regression.py`). Delete only the superseded old functions/dispatchers once Step 3 wires `RechargeSWME1D` to the generic ones. Do NOT delete this file wholesale — doing so would delete the new code too. |
 | `symbolic_math/` | entire directory | Per user decision — its math is absorbed into `moment_sw/coefficients.py`; user has their own copy elsewhere, no in-repo wrapper needed. |
 
 **Keep unchanged:** `recharge/laws.py`, `recharge/context.py` (already order-independent).
@@ -412,7 +456,7 @@ recharge-paper/                        # repo root is the uv project root
 │   ├── swme/                          # core solver (formerly planned as moment_sw)
 │   │   ├── __init__.py
 │   │   ├── coefficients.py            # §1, absorbs symbolic_math/symbo.py math
-│   │   ├── source_terms.py            # §1, promoted generic friction/recharge source
+│   │   ├── source_terms.py            # §1, base Navier-slip friction ONLY (not recharge)
 │   │   ├── mesh.py                    # + bed_elevation — §2.1
 │   │   ├── pde.py                     # SWME1D only, genericized — §1/§2
 │   │   ├── spatialDiscretization.py   # + augmented-path topography — §2.2
@@ -424,6 +468,7 @@ recharge-paper/                        # repo root is the uv project root
 │       ├── __init__.py
 │       ├── context.py
 │       ├── laws.py
+│       ├── source_terms.py            # rainfall/infiltration mass source + mixing friction
 │       ├── initial_conditions.py
 │       └── recharge_pde.py            # imports `from swme.pde import SWME1D` etc.
 ├── config/                            # wiped per §3/Step 4, YAML going forward
@@ -601,19 +646,108 @@ steps — they're what makes the hardcoded-block deletions safe.
       **exact same** `total mass = 242.14363128962492` as the pre-rename Step 0 run
       (byte-identical numerical result — confirms the move/rename changed nothing about
       behavior) and writes the same CSVs to `Data-processing/Results/Recharge/`.
-- [ ] **Step 2 — regression tests against old hardcoded code** (§3's mandatory step):
+- [x] **Step 2 — regression tests against old hardcoded code** (§3's mandatory step):
       parametrized N=0..6 equality tests for system matrix, friction source, and the
       matrix-inverse implicit source, comparing old hardcoded `pde.py` against not-yet-written
       generic implementations (write the generic implementation now, test immediately).
-- [ ] **Step 3 — swap in the generic engine**: replace `compute_system_matrix`,
-      `compute_system_matrix_diff` (delete), friction/source terms, and
-      `_compute_source_matrix_inverse` (delete, replaced by runtime linear solve) in
-      `pde.py`; promote `moment_sw/source_terms.py`; update `RechargeSWME1D` to the new
-      generic source term (§1); fix the `PDE.compute_source_term` ABC signature.
+      **DONE**, and this step's own testing forced a real architectural correction plus
+      caught two real bugs — see below.
+
+      **Architecture correction (before any code was written)**: the original §1 draft put
+      a single combined friction function in one new `moment_sw/source_terms.py`,
+      parametrized by `f_R, f_I` (recharge-only concepts). The user caught that this
+      violates the intended `swme`/`recharge` package boundary — `swme/` should hold only
+      the base model's own physics (transport + its own Navier-slip friction, present with
+      or without recharge), `recharge/` only what recharge actually *adds*. Corrected
+      design (now reflected in §1's "Module consumption" above, superseding the original
+      draft there):
+        - `swme/source_terms.py` (NEW): `reconstruct_boundary_velocities` (shared u_s/u_b
+          kinematic reconstruction — a fact about the moment representation, not friction
+          physics, so legitimately shared), `compute_navier_slip_friction` (P_slip(U), the
+          base model's own friction, f_R/f_I do not appear here at all),
+          `compute_friction_operator_matrix` (S_slip(h), the linear operator behind the
+          old `_compute_source_matrix_inverse`).
+        - `recharge/source_terms.py` (existing file, new functions ADDED alongside the old
+          N=0/1/2 code, not replacing it yet): `compute_recharge_mass_source` (S_{R,I}(U)),
+          `compute_mixing_friction` (P_mix(U), the f_R/f_I-dependent piece only),
+          `compute_total_friction` (= `swme`'s `compute_navier_slip_friction` +
+          `compute_mixing_friction` — the direct generic analog of the old
+          `compute_friction_matrix_n0/n1/n2`, which returned this same combined quantity).
+        - `pde.py`: added `_compute_system_matrix_generic` as a new module-level function
+          (imports `from . import coefficients`), staged next to the still-present
+          `SWME1D.compute_system_matrix` hardcoded blocks — not yet wired into the class.
+
+      **Bug #1 (legacy, in `pde.py`, order=6 system matrix)**: orders 0-5 matched the
+      generic implementation to `atol=1e-10` on every entry, first try, for random states
+      (`tests/test_pde_regression.py::test_system_matrix_matches_legacy`). Order=6 did not
+      — not just the single expected `A[1][7] = (2*alpha5)/13.` copy-paste bug (should be
+      `alpha6`, breaking the otherwise-universal pattern `A[1][i+1]=2*alpha_i/(2i+1)`) but
+      **22 of the 64 entries**, reproducibly with the test's own seed. Ruled out a bug in
+      the generic implementation via an independent, legacy-code-free consistency check
+      (`test_system_matrix_order_reduction_consistency`): since `A_ijk`/`B_ijk` depend only
+      on the basis functions up to the indices involved, not on the truncation order N,
+      the generic order-N matrix with `alpha_N` set to 0 must exactly reproduce the
+      order-(N-1) matrix on their shared block — verified for every order 1-6. Conclusion:
+      the legacy order=6 block (its densest, most error-prone, hand-transcribed block) is
+      simply unreliable; Step 3 deletes it outright rather than attempting to preserve its
+      behavior. Fully documented (not hidden) in
+      `test_order6_legacy_block_disagrees_at_multiple_entries`.
+      **Bug #2 (own transcription error, not legacy)**: the recharge mass-source formula as
+      first written (both in `recharge/source_terms.py` and in §1 above) had
+      `- sum_j F[i,j]*alpha_j` for the infiltration term; the thesis formula (and the
+      legacy `compute_recharge_source_n1`/`n2`, confirmed by hand-derivation for N=1) has
+      `+ sum_j F[i,j]*alpha_j`. Caught immediately by
+      `tests/test_recharge_regression.py::test_recharge_mass_source_matches_legacy` failing
+      for N=1,2 (N=0 passed, since that entry doesn't involve E/F at all). Fixed in
+      `recharge/source_terms.py` and corrected in §1 above, with a note left in place
+      explaining the correction (do not silently re-introduce it).
+
+      **Test files**: `tests/test_pde_regression.py` (116 tests: system matrix N=0-6 ×
+      hyperbolic on/off, order-reduction consistency N=1-6, friction vector N=0-6 × 3
+      viscosity/slip-length combos, friction operator matrix-inverse N=0-6 × 3
+      viscosity/slip-length combos × 3 timesteps, friction-operator/friction-vector
+      cross-consistency N=0-6) and `tests/test_recharge_regression.py` (34 tests: mass
+      source N=0,1,2 × 3 param combos vs. legacy, total friction N=0,1,2 × 3 param combos
+      vs. legacy, end-to-end `S-P` vs. legacy `compute_total_source`, generic functions
+      execute and produce finite output for N=3-6 with no legacy code to compare against,
+      `compute_total_friction` decomposes exactly into `swme` slip + `recharge` mixing).
+      **Verified**: full suite `uv run pytest -q` — 185/185 passing. End-to-end solver run
+      (`MPLBACKEND=Agg uv run python -m swme.main`) reproduces the exact same
+      `total mass = 242.14363128962492` as before Step 2 — confirms these are pure
+      additions with zero effect on the still-unchanged live execution path (Step 3 is
+      what actually wires the generic engine in and will need this exact end-to-end check
+      re-run afterward, since deleting the buggy order=6 block means an order=6 run's
+      *numbers* will legitimately change — for the better).
+- [ ] **Step 3 — swap in the generic engine** *(the generic implementations themselves are
+      already written and regression-tested per Step 2 below — `swme.pde._compute_system_matrix_generic`,
+      `swme.source_terms.{compute_navier_slip_friction,compute_friction_operator_matrix}`,
+      `recharge.source_terms.{compute_recharge_mass_source,compute_mixing_friction,compute_total_friction}`
+      all exist and pass regression tests against the legacy code. Step 3 is the mechanical
+      wiring/deletion step, not further derivation)*: in `pde.py`, replace
+      `SWME1D.compute_system_matrix`'s body with a call to (or inlining of)
+      `_compute_system_matrix_generic` and delete the hardcoded `if order==N` blocks (note:
+      do NOT try to preserve the order=6 block's behavior — it has confirmed bugs at 22/64
+      entries, see Step 2 findings); delete `compute_system_matrix_diff` (already confirmed
+      dead code, zero callers anywhere in the repo); replace `SWME1D.compute_source_term`'s
+      non-implicit branch with `-swme.source_terms.compute_navier_slip_friction(...)`;
+      replace `_compute_source_matrix_inverse`'s body with
+      `np.linalg.inv(np.eye(n) - dt*swme.source_terms.compute_friction_operator_matrix(...))`
+      and delete its ~1700 lines of hardcoded per-order blocks. In `recharge/recharge_pde.py`,
+      replace `RechargeSWME1D.compute_source_term`'s call to `compute_total_source` with
+      direct calls to `recharge.source_terms.compute_recharge_mass_source` and
+      `compute_total_friction`, removing the `order not in (0,1,2)` restriction. In
+      `recharge/source_terms.py`, delete the now-superseded
+      `compute_recharge_source_n0/n1/n2`, `compute_friction_matrix_n0/n1/n2`,
+      `compute_recharge_source`, `compute_friction_matrix`, `compute_total_source`, and
+      `_evaluate_rainfall_and_infiltration` (keep the file itself — it now holds the generic
+      functions, see the corrected §1 "Module consumption" above). Fix the
+      `PDE.compute_source_term` ABC signature to include `delta_t`.
 - [ ] **Step 4 — delete out-of-scope models**: `HermiteMomentEquations`,
       `VegetationSWME1D`, adaptive/`Micro_macro` simulation classes, matching `plotting.py`
-      classes, `main_HME_errorChecks.py`, `main_SWME_errorData.py`,
-      `recharge/source_terms.py`, `symbolic_math/`.
+      classes, `main_HME_errorChecks.py`, `main_SWME_errorData.py`, `symbolic_math/`.
+      (`recharge/source_terms.py` is NOT deleted — only its superseded N=0/1/2 functions are
+      removed, in Step 3 above, alongside the `RechargeSWME1D` wiring; see the corrected
+      deletion-plan table in §3.)
       **Also, per user directive**: wipe `config/` down to nothing (or one minimal
       canonical example) — delete `config/ConfigHME1D/`, `config/Config Micro-Macro/`,
       `config/ConfigSWME1D/`, `config/Config_Cyril-honoursProject/`, and the current

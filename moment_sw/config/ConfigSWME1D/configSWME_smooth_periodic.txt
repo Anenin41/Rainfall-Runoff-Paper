@@ -1,0 +1,81 @@
+##############################
+###### PDE INFORMATION #######
+##############################
+
+[pde_information]
+
+### True: one-dimensional, False: two-dimensional
+1D = True
+
+### PDE type. Implemented: SWME1D, HSWME1D
+pde_type = SWME1D
+    # SWME1D, HSWME1D #
+    # Specify friction model. Implemented: Newton
+frictionModel = Newton
+        # Newton #
+        # Specify friction parameters
+slipLength = 10.0
+viscosity = 10.0
+
+linear_source = True
+
+# Specify initial conditions. 
+# SWME1D, HSWME1D: damBreak_noVelocity, constantHeight_noVelocity, constantHeight_constantVelocity, 
+                   #linearHeight_noVelocity, damBreak_constantVelocity, smooth_wave, symmetric_damBreak,
+                   #smooth_plus_damBreak
+initialCondition = smooth_constantVelocity
+
+breakdown_criterion = damBreak_constantVelocity
+
+###############################
+###### GRID INFORMATION #######
+###############################
+
+[grid_information]
+
+### Only structured grids implemented currently
+structuredGrid = True
+
+    # structuredGrid #
+    # Number of grid points in x-direction and y-direction (if the simulation is 1D: only resolutionX is used)
+resolutionX = 200
+resolutionY = 800
+    # Physical boundaries of the domain (if the simulation is 1D: only x1boundary and x2boundary are used)
+x1boundary = -0.5
+x2boundary = 0.5
+y1boundary = -2
+y2boundary = 2
+
+
+#########################################
+##### Numerical method information ######
+#########################################
+
+[numerical_method_information]
+# End time
+t_end = 1.0
+
+# spatially_adaptive, classical, micro_macro
+method = spatially_adaptive
+    ### SPATIALLYADAPTIVE ###
+    # spatial coupling: conservative, nonconservative
+coupling = nonconservative
+    # Starting order of the adaptive simulation
+start_order = 5
+    ### CLASSICAL ###
+    # Order of the model
+order = 0
+
+
+# Finite volume method type. Implemented: PVM
+fvm_type = PVM
+
+    # PVM #
+    # Polynomial viscosity method. Implemented: PRICE, LF
+pvm = PRICE
+
+# Time integration for source term. Implemented: ExplicitEuler, ImplicitEuler, Exact
+timeIntegrator = ImplicitEuler
+
+# Boundary condition. Implemented: INFLOW_OUTFLOW, PERIODIC
+boundaryCondition = PERIODIC

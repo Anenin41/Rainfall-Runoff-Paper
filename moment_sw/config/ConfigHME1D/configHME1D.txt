@@ -1,0 +1,77 @@
+##############################
+###### PDE INFORMATION #######
+##############################
+
+[pde_information]
+
+### True: one-dimensional, False: two-dimensional
+1D = True
+
+pde_type = HME
+
+# Relaxation time
+relaxation_time = 0.1
+
+# The HME model has a linear source term
+linear_source = True
+
+# Specify initial conditions. 
+### constantDensity_noVelocity, constantDensity_constantVelocity, shockTube_noVelocity,
+### smooth_densityWave_noVelocity, symmetric_shockTube, symmetric_shockTube_constantVelocity
+### colliding_shockTube, smooth_and_dam, smooth_expit_rightgoing, smooth_expit_leftgoing
+initialCondition = smooth_and_dam
+
+breakdown_criterion = nothing
+
+###############################
+###### GRID INFORMATION #######
+###############################
+
+[grid_information]
+
+### Only structured grids implemented currently
+structuredGrid = True
+
+    # structuredGrid #
+    # Number of grid points in x-direction and y-direction (if the simulation is 1D: only resolutionX is used)
+resolutionX = 3000
+resolutionY = 800
+    # Physical boundaries of the domain (if the simulation is 1D: only x1boundary and x2boundary are used)
+x1boundary = -2
+x2boundary = 2
+y1boundary = -2
+y2boundary = 2
+
+
+#########################################
+##### Numerical method information ######
+#########################################
+
+[numerical_method_information]
+# End time
+t_end = 1.0
+
+# spatially_adaptive, classical, micro_macro, smoothedAdaptive, interpolatedAdaptive
+method = classical
+    ### SPATIALLYADAPTIVE ###
+    # spatial coupling: conservative, nonconservative
+coupling = nonconservative
+    # Starting order of the adaptive simulation
+start_order = 10
+    ### CLASSICAL ###
+    # Order of the model
+order = 10
+
+
+# Finite volume method type. Implemented: PVM
+fvm_type = PVM
+
+    # PVM #
+    # Polynomial viscosity method. Implemented: PRICE, LF, Roe
+pvm = PRICE
+
+# Time integration for source term. Implemented: ExplicitEuler, ImplicitEuler, Exact
+timeIntegrator = Exact
+
+# Boundary condition. Implemented: INFLOW_OUTFLOW, PERIODIC
+boundaryCondition = PERIODIC

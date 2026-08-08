@@ -1,14 +1,18 @@
 # Packages & Local Imports
+import argparse
+import configparser
+import os
+import timeit
 from pathlib import Path
+
+import pandas as pd
+
 from . import simulation
 from . import pde
 from . import mesh
 from . import spatialDiscretization
 from . import timeIntegration
 from . import plotting
-import pandas as pd
-import configparser
-import timeit
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -16,7 +20,6 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 # avoid import errors in case the recharge module never merges with the main
 # branch.
 try:
-    import os
     from recharge.initial_conditions import RechargeSWME1D_CustomIC as RechargeSWME1D
     from recharge.laws import (
         HortonInfiltration, ConstantInfiltration, AdmissibleMixingFriction,
@@ -39,28 +42,89 @@ except ImportError:
     # Silent fail, don't print a statement
     HAS_RECHARGE = False
 
-def main():
+DEFAULT_CONFIG = _PACKAGE_DIR / 'config' / 'config.ini'
+
+
+def _resolve_config(name_or_path) -> Path:
+    """Resolve a --config value to a readable file.
+
+    Accepts a filesystem path, or the bare name of a config shipped in
+    `swme/config/` (with or without the .ini suffix), so thesis cases can be
+    run as e.g. `--config thesis_5p3_pulse_N1` from any working directory.
+    """
+    if name_or_path is None:
+        return DEFAULT_CONFIG
+
+    candidates = [Path(name_or_path)]
+    stem = Path(name_or_path).name
+    candidates += [
+        _PACKAGE_DIR / 'config' / stem,
+        _PACKAGE_DIR / 'config' / f'{stem}.ini',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    available = sorted(p.stem for p in (_PACKAGE_DIR / 'config').glob('*.ini'))
+    raise FileNotFoundError(
+        f"Config '{name_or_path}' not found. Tried: "
+        + ", ".join(str(c) for c in candidates)
+        + ".\nAvailable shipped configs: "
+        + ", ".join(available)
+    )
+
+
+def main(argv=None):
+
+    parser = argparse.ArgumentParser(
+        prog='moment-sw',
+        description='1D finite-volume solver for the Shallow Water Moment '
+                    'Equations (SWME/HSWME) and their rainfall-runoff '
+                    '(recharge) extension.',
+    )
+    parser.add_argument(
+        '-c', '--config', default=None,
+        help='Config file to run: a path, or the name of one shipped in '
+             f'swme/config/. Default: {DEFAULT_CONFIG.name}',
+    )
+    parser.add_argument(
+        '-o', '--output-dir', default=None,
+        help='Directory for result CSVs. Overrides the config\'s '
+             'postprocessing/recharge_output_dir.',
+    )
+    parser.add_argument(
+        '--list-configs', action='store_true',
+        help='List the config files shipped in swme/config/ and exit.',
+    )
+    args = parser.parse_args(argv)
+
+    if args.list_configs:
+        for path in sorted((_PACKAGE_DIR / 'config').glob('*.ini')):
+            print(path.stem)
+        return
+
+    config_path = _resolve_config(args.config)
+    print(f"config: {config_path}")
 
     config = configparser.ConfigParser()
-    config.read(_PACKAGE_DIR / 'config' / 'config.ini')
+    config.read(config_path)
     pde_information = config['pde_information']
     grid_information = config['grid_information']
     numerical_method_information = config['numerical_method_information']
 
-    if HAS_RECHARGE:
-        # Check if there exist a 'postprocessing' section on config.ini
-        postprocessing = config['postprocessing']
-    
-        # Make a post-processing storade directory if one doesn't exist. 
-        # Compartmentalize the recharge results in a separate folder but in 
-        # the same Results/ directory.
-        os.makedirs('Data-processing/Results/Recharge', exist_ok=True)
-        
+    # Output directory: --output-dir wins, else the config, else the default.
+    postprocessing = config['postprocessing'] if config.has_section('postprocessing') else {}
+    output_dir = (
+        args.output_dir
+        or (postprocessing.get('recharge_output_dir') if postprocessing else None)
+        or 'Data-processing/Results/Recharge'
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
 
     linear_source = pde_information.getboolean('linear_source')
     time_integrator = numerical_method_information['timeIntegrator']
     linear_source_implicit = linear_source and time_integrator == 'ImplicitEuler'
-    exact_source_computation = time_integrator == 'Exact'
 
     if pde_information['pde_type'] == 'SWME1D':
         _pde = pde.SWME1D(pde_information['initialCondition'],
@@ -75,30 +139,6 @@ def main():
                         True,
                         linear_source_implicit)
         
-    elif pde_information['pde_type'] == 'VegetationSWME1D':
-        _pde = pde.VegetationSWME1D(pde_information['initialCondition'],
-                                pde_information.getfloat('viscosity'),
-                                pde_information.getfloat('slipLength'),
-                                False,
-                                linear_source_implicit,
-                                0.008,
-                                0.97,
-                                800,
-                                0.4)
-    elif pde_information['pde_type'] == 'HME':
-        _pde = pde.HermiteMomentEquations(
-                        pde_information['initialCondition'],
-                        pde_information.getfloat('relaxation_time'),
-                        True,
-                        True,
-                        exact_source_computation)
-    elif pde_information['pde_type'] == 'Grad':
-        _pde = pde.HermiteMomentEquations(
-                        pde_information['initialCondition'],
-                        pde_information.getfloat('relaxation_time'),
-                        False,
-                        True,
-                        exact_source_computation)
     elif pde_information['pde_type'] == 'RechargeSWME1D':
         if not HAS_RECHARGE:
             raise ImportError(
@@ -197,108 +237,25 @@ def main():
         _mesh = mesh.UniformRectangularMesh1D([grid_information.getfloat('x1boundary'),grid_information.getfloat('x2boundary')],
                                                grid_information.getint('resolutionX')) #TODO: Implement different grids
 
-        if numerical_method_information['method'] == 'spatially_adaptive':
-            start_order = int(numerical_method_information['start_order'])
+        # Only the classical (non-adaptive) driver remains; the spatially
+        # adaptive and micro-macro drivers were removed in
+        # RESTRUCTURE_PLAN.md Step 4 along with the models they served.
+        if numerical_method_information['method'] != 'classical':
+            raise ValueError(
+                f"Unsupported method = '{numerical_method_information['method']}'. "
+                "Only 'classical' is available."
+            )
 
-            if numerical_method_information['coupling'] == 'nonconservative':
-                _simulation = simulation.NonConservativeAdaptiveSimulation1D(
-                    start_order,
-                    _pde,
-                    _mesh,
-                    numerical_method_information['boundaryCondition'],
-                    pde_information['initialCondition'],
-                    pde_information['breakdown_criterion'],
-                    _spatialDiscretization,
-                    _time_integration
-                )
-            elif numerical_method_information['coupling'] == 'conservative':
-                _simulation = simulation.ConservativeAdaptiveSimulation1D(
-                    start_order,
-                    _pde,
-                    _mesh,
-                    numerical_method_information['boundaryCondition'],
-                    pde_information['initialCondition'],
-                    pde_information['breakdown_criterion'],
-                    _spatialDiscretization,
-                    _time_integration
-                )
-        elif numerical_method_information['method'] == 'smoothedAdaptive':
-            if numerical_method_information['coupling'] == 'nonconservative':
-                start_order = int(numerical_method_information['start_order'])
-                _simulation = simulation.SmoothedConsAdaptiveSimulation1D(
-                    start_order,
-                    _pde,
-                    _mesh,
-                    numerical_method_information['boundaryCondition'],
-                    pde_information['initialCondition'],
-                    pde_information['breakdown_criterion'],
-                    _spatialDiscretization,
-                    _time_integration)
-            elif numerical_method_information['coupling'] == 'nonconservative':
-                start_order = int(numerical_method_information['start_order'])
-                _simulation = simulation.SmoothedNonConsAdaptiveSimulation1D(
-                    start_order,
-                    _pde,
-                    _mesh,
-                    numerical_method_information['boundaryCondition'],
-                    pde_information['initialCondition'],
-                    pde_information['breakdown_criterion'],
-                    _spatialDiscretization,
-                    _time_integration)                
-        elif numerical_method_information['method'] == 'interpolatedAdaptive':
-            start_order = int(numerical_method_information['start_order'])
-            _simulation = simulation.InterpolatedAdaptiveSimulation1D(
-                start_order,
-                _pde,
-                _mesh,
-                numerical_method_information['boundaryCondition'],
-                pde_information['initialCondition'],
-                pde_information['breakdown_criterion'],
-                _spatialDiscretization,
-                _time_integration) 
-        elif numerical_method_information['method'] == 'classical':
-            _simulation = simulation.ClassicalSimulation1D(
-                numerical_method_information.getint('order'),
-                _pde,
-                _mesh,
-                numerical_method_information['boundaryCondition'],
-                pde_information['initialCondition'],
-                _spatialDiscretization,
-                _time_integration)
-            
-        elif numerical_method_information['method'] == 'micro_macro':
-            _simulation = simulation.Micro_macro(
-                [int(order) for order in numerical_method_information['orders'].split(',')],
-                _pde,
-                _mesh,
-                numerical_method_information['boundaryCondition'],
-                pde_information['initialCondition'],
-                _spatialDiscretization,
-                _time_integration)
-        
-        # Modify the old plotting code to be slighly more readable.
-        swme_plot_types = ['SWME1D', 'HSWME1D']
-        if HAS_RECHARGE:
-            swme_plot_types.append('RechargeSWME1D')
+        _simulation = simulation.ClassicalSimulation1D(
+            numerical_method_information.getint('order'),
+            _pde,
+            _mesh,
+            numerical_method_information['boundaryCondition'],
+            pde_information['initialCondition'],
+            _spatialDiscretization,
+            _time_integration)
 
-        if pde_information['pde_type'] in swme_plot_types:
-            if numerical_method_information['method'] in [
-                'spatially_adaptive',
-                'smoothedAdaptive',
-                'interpolatedAdaptive'
-            ]:
-                _plotting = plotting.SWME1DPlotAdaptive(_pde, _mesh, _simulation)
-            elif numerical_method_information['method'] == 'classical':
-                _plotting = plotting.SWME1DPlotClassical(_pde, _mesh, _simulation)
-        elif pde_information['pde_type'] in ['HME', 'Grad']:
-            if numerical_method_information['method'] in [
-                'spatially_adaptive',
-                'smoothedAdaptive',
-                'interpolatedAdaptive'
-            ]:
-                _plotting = plotting.HME1DPlotAdaptive(_pde, _mesh, _simulation)
-            elif numerical_method_information['method'] == 'classical':
-                _plotting = plotting.HME1DPlotClassical(_pde, _mesh, _simulation)
+        _plotting = plotting.SWME1DPlotClassical(_pde, _mesh, _simulation)
     
         start = timeit.default_timer()
         if (
@@ -306,13 +263,18 @@ def main():
             and pde_information['pde_type'] == 'RechargeSWME1D'
             and numerical_method_information['method'] == 'classical'
         ):
-            # Store CSVs of general solution & hyperbolicity history
-            _simulation.store_history = postprocessing.getboolean('store_history')
-            _simulation.store_hyperbolicity = postprocessing.getboolean('store_hyperbolicity')
+            # Store CSVs of general solution & hyperbolicity history.
+            # Defaults let a config omit the [postprocessing] section entirely.
+            _simulation.store_history = config.getboolean(
+                'postprocessing', 'store_history', fallback=True)
+            _simulation.store_hyperbolicity = config.getboolean(
+                'postprocessing', 'store_hyperbolicity', fallback=False)
 
             # Store every 1 time step. Adjust to larger values to reduce storage.
-            _simulation.history_stride = postprocessing.getint('history_stride')
-            _simulation.hyperbolicity_stride = postprocessing.getint('hyperbolicity_stride')
+            _simulation.history_stride = config.getint(
+                'postprocessing', 'history_stride', fallback=1)
+            _simulation.hyperbolicity_stride = config.getint(
+                'postprocessing', 'hyperbolicity_stride', fallback=1)
 
         data_array = _simulation.run_simulation(numerical_method_information.getfloat('t_end'))
 
@@ -340,11 +302,15 @@ def main():
                     f"{len(primitive_columns)} columns."
                 )
 
-            # Define output prefix for recharge results
+            # Define output prefix for recharge results. The config stem is
+            # included so that runs differing only in parameters the tag does
+            # not capture (e.g. alpha_R, boundary condition, end time) land in
+            # distinct files instead of silently overwriting one another.
             model_tag = "hswme" if _pde.hyperbolic else "swme"
-            output_prefix = (
-                f"Data-processing/Results/Recharge/"
-                f"recharge_{model_tag}_N{order}_{infiltration_type}"
+            case_tag = config_path.stem
+            output_prefix = os.path.join(
+                output_dir,
+                f"{case_tag}__recharge_{model_tag}_N{order}_{infiltration_type}",
             )
 
             # Final snapshot
@@ -399,34 +365,21 @@ def main():
                     f"{output_prefix}_summary_history.csv", index=False,
                 )
 
-                # Store hyperbolicity CSVs
+                # Store hyperbolicity CSVs. Named per-run like the others, so
+                # successive cases do not overwrite each other's diagnostics.
                 pd.DataFrame(_simulation.hyperbolicity_history).to_csv(
-                    "Data-processing/Results/Recharge/recharge_hyperbolicity_history.csv",
-                    index = False,
+                    f"{output_prefix}_hyperbolicity_history.csv", index = False,
                 )
 
                 pd.DataFrame(_simulation.hyperbolicity_summary).to_csv(
-                    "Data-processing/Results/Recharge/recharge_hyperbolicity_summary.csv",
-                    index = False,
+                    f"{output_prefix}_hyperbolicity_summary.csv", index = False,
                 )
 
         stop = timeit.default_timer()
         print('Time: ', stop - start)
         print(
             f"RechargeHSWME: {pde_information.getboolean('hyperbolic')}")
-        data_frame = pd.DataFrame(data_array)
-
-        # Making the plotting call safe
-        if '_plotting' in locals():
-            _plotting.plot(data_array)
-        else: 
-            print("No plotting class defined for pde_type =", 
-                  pde_information['pde_type'])
-        # data_frame.to_csv('Data-processing/Output/test.csv', index=False,header=False)
-        # data_frame.to_csv(
-        #     'Data-processing/Results/KineticMomentEquations/smoothAndShockTube_order10_relaxation0.1_time1.0_3000.csv',
-        #     index=False,
-        #     header=False)
+        _plotting.plot(data_array)
     else:
         print('2D not implemented yet')
 

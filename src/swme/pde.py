@@ -3,6 +3,7 @@ import numpy as np
 
 from . import coefficients
 from . import source_terms
+from .topography import TopographySettings
 
 
 def _compute_system_matrix_generic(
@@ -73,6 +74,89 @@ def _compute_system_matrix_generic(
     moment_block.flat[:: order + 1] += um
     Amat[2:, 2:] = moment_block
     return Amat
+
+
+def _compute_augmented_system_matrix_generic(
+    order: int,
+    augmented_values: np.ndarray,
+    g: float = 1,
+    hyperbolic: bool = False,
+    eps_div: float = 1e-12,
+) -> np.ndarray:
+    """Augmented-state system matrix A~(W) for W = (U, Z), generic in N.
+
+    Bottom topography enters this solver as an extra, frozen path coordinate
+    rather than as a cell-centered source term (RESTRUCTURE_PLAN.md Step 5).
+    The scheme is already a Castro-Pares path-conservative fluctuation solver
+    - `spatialDiscretization.PVM.compute_fluctuation` integrates A(psi(s))
+    along the linear path between two cells - so the bed-slope non-conservative
+    product g*h*dZ/dx is handled by the very same machinery as the moment
+    transport, simply by widening the state:
+
+        A~(W) = [ A(U)   g*h*e_momentum ]        (n+1) x (n+1),  n = order+2
+                [   0           0       ]
+
+    The last row is zero because Z does not evolve (dZ/dt = 0), and the last
+    column is nonzero only in the momentum row: the momentum equation is
+
+        d_t(h*u) + d_x(h*u^2 + g*h^2/2 + moment terms) + g*h*d_x(Z) = 0,
+
+    so the coefficient multiplying d_x(Z) is +g*h. (Note the sign: an earlier
+    revision of RESTRUCTURE_PLAN.md sketched this entry as -g*h, which is the
+    sign the bed-slope term carries when written on the *right-hand* side as a
+    source. Moved to the left-hand side, inside the transport matrix, it is
+    +g*h. The C-property check below is what pins this down, and
+    tests/test_topography.py asserts it directly.)
+
+    Why this is well balanced. For a lake at rest - h + Z = H constant,
+    u_m = alpha_i = 0 - the linear path between two neighbouring cells stays a
+    lake at rest at every quadrature node, and
+
+        A~(W(s)) . (W_R - W_L)
+            row 0        : 1 * delta(h*u_m)                     = 0
+            row momentum : g*h(s)*delta(h) + g*h(s)*delta(Z)
+                         = g*h(s)*delta(h + Z)                  = 0
+            rows moments : all coefficients vanish at rest       = 0
+
+    identically, for every quadrature node and hence for the quadrature sum.
+    The central part of the fluctuation is therefore exactly zero. Whether the
+    *whole* fluctuation vanishes additionally depends on the numerical
+    viscosity Q: it must annihilate the same jump. Q = |A~| (Roe) and the Osher
+    variant do, since the jump lies in ker(A~); Q = c*I + ... (LF, PRICE) does
+    not, because of the constant term. See the `well_balanced` flag on the
+    schemes in `spatialDiscretization.py`, which `ClassicalSimulation1D` warns
+    about.
+
+    Parameters
+    ----------
+    order : int
+        order of the moment model
+    augmented_values : np.ndarray
+        1D augmented state [h, h*u_m, h*a_1, ..., h*a_N, Z], length order+3
+    g : float
+        gravitational constant
+    hyperbolic : bool
+        HSWME regularization flag, forwarded to the base matrix
+    eps_div : float
+        division guard on h, forwarded to the base matrix
+
+    Returns
+    -------
+    A_tilde : np.ndarray
+        shape (order+3, order+3)
+    """
+    augmented_values = np.asarray(augmented_values, dtype=np.float64)
+    n = order + 2
+    A_tilde = np.zeros((n + 1, n + 1), dtype=np.float64)
+    A_tilde[:n, :n] = _compute_system_matrix_generic(
+        order,
+        augmented_values[:n],
+        g=g,
+        hyperbolic=hyperbolic,
+        eps_div=eps_div,
+    )
+    A_tilde[1, n] = g * augmented_values[0]
+    return A_tilde
 
 
 #TODO: implement MomentModel as a subclass of PDE and include the possibility of simulating PDEs that are not moment models (and don't have an order)
@@ -318,12 +402,13 @@ class SWME1D(PDE):
         computes a matrix for efficient implicit numerical solution
     """
 
-    def __init__(self, 
+    def __init__(self,
                 initial_condition: str,
                 viscosity: float,
                 slip_length: float,
                 hyperbolic: bool,
-                linear_source: bool):
+                linear_source: bool,
+                topography: TopographySettings | None = None):
         """
         Constructs all the necessary attributes for the SWME1D object.
 
@@ -340,6 +425,14 @@ class SWME1D(PDE):
         linear_source : boolean
             true if the source term is represented as a constant matrix multiplied by the state vector,
             false if the source term is represented in vector form
+        topography : TopographySettings, optional
+            bed-elevation settings, needed only by the topography-aware
+            initial conditions ('lakeAtRest', 'perturbedLakeAtRest'), which
+            cannot be expressed as a function of position alone. Defaults to a
+            flat bed at zero, i.e. exactly the pre-topography behavior. The
+            bed's effect on the *dynamics* does not come through here - it
+            comes through `compute_augmented_system_matrix` and the sampled
+            elevation stored on the mesh.
         """
         self.initial_condition = initial_condition
         self.viscosity = viscosity
@@ -347,6 +440,7 @@ class SWME1D(PDE):
         self.hyperbolic = hyperbolic
         self.linear_source = linear_source
         self.exact_source_computation = False
+        self.topography = topography if topography is not None else TopographySettings()
 
     def compute_system_matrix(self,
                               order: int,
@@ -397,6 +491,63 @@ class SWME1D(PDE):
         return _compute_system_matrix_generic(
             order,
             values,
+            g = g,
+            hyperbolic = self.hyperbolic,
+        )
+
+    def compute_augmented_system_matrix(self,
+                                        order: int,
+                                        augmented_values: np.ndarray,
+                                        g = 1) -> np.ndarray:
+        """
+        Computes the augmented system matrix A~(W), W = (U, Z), that couples
+        bottom topography into the path-conservative scheme.
+
+        See `_compute_augmented_system_matrix_generic` (module level, above)
+        for the formula, the sign of the bed-slope entry, and the argument for
+        why this recovers the C-property. Used by
+        `ClassicalSimulation1D.run_simulation` in place of
+        `compute_system_matrix` whenever the mesh carries a non-flat bed.
+
+        Parameters
+        ----------
+        order : int
+            order of the moment model
+        augmented_values : np.ndarray
+            1D augmented state [h, h*u_m, h*a_1, ..., h*a_N, Z], length
+            order+3
+        g : float
+            gravitational constant (1 by default; the equations are
+            dimensionless)
+
+        Returns
+        -------
+        A_tilde : np.ndarray
+            augmented system matrix, shape (order+3, order+3)
+        """
+        augmented_values = np.asarray(augmented_values, dtype = np.float64)
+
+        expected = order + 3
+        if augmented_values.ndim != 1 or augmented_values.shape[0] != expected:
+            raise ValueError(
+                f"Expected a 1D augmented state of length {expected} "
+                f"([h, h*u_m, h*a_1..a_{order}, Z]), got shape "
+                f"{augmented_values.shape}."
+            )
+        if not np.isfinite(augmented_values).all():
+            raise ValueError(
+                "Non-finite state encountered in "
+                f"compute_augmented_system_matrix: {augmented_values}"
+            )
+        if augmented_values[0] <= 0.0:
+            raise ValueError(
+                f"Non-positive height h={augmented_values[0]} in "
+                f"compute_augmented_system_matrix, values={augmented_values}"
+            )
+
+        return _compute_augmented_system_matrix_generic(
+            order,
+            augmented_values,
             g = g,
             hyperbolic = self.hyperbolic,
         )
@@ -769,6 +920,38 @@ class SWME1D(PDE):
                     initial_values[6] = 0 
                 if order > 5:
                     initial_values[7] = 0
+        elif initial_condition in ('lakeAtRest', 'perturbedLakeAtRest'):
+            # Topography-aware initial conditions (RESTRUCTURE_PLAN.md Step 5).
+            # Unlike every other case above, these are not a function of
+            # position alone - they need the bed profile, which arrives via
+            # `self.topography` (see TopographySettings).
+            #
+            # 'lakeAtRest' is the C-property benchmark: a flat free surface
+            # h + Z = H over an arbitrary bed, at rest. A well-balanced scheme
+            # must hold it exactly, forever.
+            # 'perturbedLakeAtRest' adds a Gaussian free-surface bump on top,
+            # the standard follow-up test: the perturbation must propagate
+            # without the bed generating spurious waves of the same order.
+            settings = self.topography
+            bed = settings.elevation_at(position)
+            height = settings.reference_water_level - bed
+
+            if initial_condition == 'perturbedLakeAtRest' and settings.perturbation_amplitude != 0.0:
+                xi = (position - settings.perturbation_center) / settings.perturbation_width
+                height += settings.perturbation_amplitude*np.exp(-xi*xi)
+
+            if not np.isfinite(height) or height <= 0.0:
+                raise ValueError(
+                    f"Initial condition '{initial_condition}' produced a "
+                    f"non-positive water height h={height} at x={position} "
+                    f"(bed Z={bed}, reference level "
+                    f"{settings.reference_water_level}). Raise the reference "
+                    "level above the highest point of the bed - dry cells are "
+                    "not supported yet (RESTRUCTURE_PLAN.md Step 6)."
+                )
+
+            # At rest: zero momentum and zero moments, at every order.
+            initial_values[0] = height
         elif initial_condition == 'smooth_wave_smallHeightGradient':
             initial_values[0] = 1 + 0.5*np.exp(-3*position**2)
             initial_values[1] = 1.0*initial_values[0]

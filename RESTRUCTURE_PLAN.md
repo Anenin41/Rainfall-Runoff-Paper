@@ -6,24 +6,33 @@ historical title context in the note above rather than rewriting every prose men
 `moment_sw` throughout §1-4, which describe design decisions made before the rename and
 are unaffected by it — see decision #5 for the mapping.)*
 
-**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, 2, 3 and 4 complete. The solver
-runs on the arbitrary-N generic engine (all hardcoded per-order blocks gone, the
-`RechargeSWME1D` N ∈ {0,1,2} cap lifted), and every out-of-scope model has been removed:
-`pde.py` is down from 5034 to 884 lines, `simulation.py` 2891 → 549, `plotting.py`
-466 → 165, `recharge/source_terms.py` 933 → 102, with `src/` totalling 4262 lines. 303
-tests pass against golden reference values captured from the legacy code before deletion.
-Two real bugs were found and fixed on the way (Steps 2/3); Step 3 carries a documented
-~1.7x runtime cost with an identified follow-up. **Step 4.5 then validated the whole
-refactor against the thesis's own results, end to end**: a `--config` CLI, 20 transcribed
-Chapter 5 test-case configs, `scripts/run_thesis_configs.sh` to run them all into a
-`results/` layout, and all 7 `processing/*.py` figure-generation scripts (+
-`processing/config.ini`) repointed at that layout and confirmed running clean against real
-output. Three thesis equations check out numerically to high precision (§5.1 eq. 5.5, §5.2
-eqs. 5.9-5.10, §5.6 eq. 5.17), and §5.1's figure visually matches the thesis exactly;
-§5.3-§5.5 have no closed form but their figures now regenerate for direct comparison.
-**Step 5 (bottom topography + well-balancing) is next — the first step that adds genuinely
-new numerics rather than restructuring existing behavior, so the reference run's numbers
-will legitimately change from here on.**
+**Status: IMPLEMENTATION IN PROGRESS — Steps 0, 1, 1.5, 2, 3, 4, 4.5, 5 and 5.5 complete.
+The solver runs on the arbitrary-N generic engine (all hardcoded per-order blocks gone, the
+`RechargeSWME1D` N ∈ {0,1,2} cap lifted), every out-of-scope model has been removed
+(`pde.py` 5034 → ~1000 lines, `simulation.py` 2891 → ~600, `plotting.py` 466 → 165,
+`recharge/source_terms.py` 933 → 102), **bottom topography with a well-balanced
+augmented-path coupling is in** (Step 5), and **hyperbolicity is now audited and detected
+at runtime** (Step 5.5). 525 tests pass, against golden reference values captured from the
+legacy code before deletion plus the new topography and hyperbolicity suites.
+Five real bugs/errors were found and fixed on the way (Steps 2/3, two in Step 5's own
+design, and a false-negative hyperbolicity detector in Step 5.5); Step 3 carries a
+documented ~1.7x runtime cost with an identified follow-up.
+**Step 4.5 validated the whole refactor against the thesis's own results, end to end**: a
+`--config` CLI, 20 transcribed Chapter 5 test-case configs, `scripts/run_thesis_configs.sh`
+to run them all into a `results/` layout, and all 7 `processing/*.py` figure-generation
+scripts (+ `processing/config.ini`) repointed at that layout and confirmed running clean
+against real output. Three thesis equations check out numerically to high precision (§5.1
+eq. 5.5, §5.2 eqs. 5.9-5.10, §5.6 eq. 5.17), and §5.1's figure visually matches the thesis
+exactly; §5.3-§5.5 have no closed form, and **the user has since confirmed that their
+regenerated figures match the thesis** — the refactor is validated.
+**Step 5 turned out to remain strictly additive after all**: topography is opt-in per
+config, a flat bed keeps the solver on its original code path, and the reference run still
+reproduces `total mass = 242.1436312896249` bit for bit — and so does Step 5.5, whose only
+numerical change is provably an identity. That stops being true at **Step 6 (wet-dry
+treatment), which is next**: it changes the primitive-extraction path for every cell, so
+the "bit-identical reference run" check retires there. Step 5.5 also leaves Step 6 a
+warning — hyperbolicity depends on `alpha/sqrt(g*h)`, so a drying cell drives the *scaled*
+moments up even as the raw ones stay small, which is exactly the regime that breaks SWME.
 This file is the single source of truth for this restructure. Any agent picking up this
 work should read this file first, update the checkboxes/status notes as work lands, and
 avoid re-deriving the design decisions below (they've already been made and are recorded
@@ -333,11 +342,11 @@ Gauss-Legendre quadrature along the linear path `psi(s) = (1-s)*U_L + s*U_R`.
 
 Design: augment the state to `W = (U, Z)` and the system matrix to
 ```
-Ã(W) = [ A(U)   -g*h*e_momentum ]     # (n+1)x(n+1), n = order+2
+Ã(W) = [ A(U)   +g*h*e_momentum ]     # (n+1)x(n+1), n = order+2
         [  0          0         ]
 ```
 i.e. `A(U)` plus one extra column (nonzero only at `row=momentum(1), col=n`, value
-`-g*h`) and one extra all-zero row (`Z` is a passive/frozen path coordinate,
+`+g*h`) and one extra all-zero row (`Z` is a passive/frozen path coordinate,
 `dZ/dt = 0`). Change `PVM.compute_fluctuation` /
 `compute_generalized_roe_and_viscosity` to accept the augmented `(U, Z)` pair and the
 augmented matrix callable — the same 5-point quadrature loop applies unchanged on
@@ -345,6 +354,14 @@ augmented matrix callable — the same 5-point quadrature loop applies unchanged
 state update (the `Z`-row is zero by construction). `ClassicalSimulation1D.run_simulation`
 must build `system_matrix` closures over `(U, Z)` pairs and pass `mesh.bed_elevation[i]`
 alongside `values[i,:]` at every interface.
+
+**SIGN CORRECTED during Step 5** (this entry originally read `-g*h`). `-g*h` is the sign
+the bed-slope term carries as a *right-hand-side source*, `+g*h*dZ/dx` is what appears once
+it is moved to the left-hand side into the transport matrix, which is where the augmented
+formulation puts it. The wrong sign is not a small error: it makes the momentum row of
+`Ã·ΔW` at a lake at rest equal `g*h*(Δh - ΔZ) = 2*g*h*Δh` instead of zero, i.e. maximally
+anti-balanced. See Step 5's entry in the checklist and
+`pde._compute_augmented_system_matrix_generic`'s docstring.
 
 Why this recovers the C-property: for a lake-at-rest state (`h+Z = const`,
 `u_m = alpha_i = 0` everywhere), the fluctuation becomes exactly the discrete gradient of
@@ -354,12 +371,22 @@ needed because the topography coupling goes through the *same* non-conservative-
 machinery already used for the moment transport, per the standard Castro–Parés path-
 conservative treatment of source terms with topography.
 
+**REFINED during Step 5 — the above is only half the story.** The augmented matrix kills
+the equilibrium jump, so the *central* part of the fluctuation vanishes for any scheme. But
+the fluctuation is `(1/2)(Ã ± Q)ΔW`, so the numerical viscosity `Q` must annihilate it too.
+With `Q = P(Ã)` for the scheme's viscosity polynomial `P`, and the equilibrium jump lying
+in `ker(Ã)`, we get `Q·ΔW = P(0)·ΔW`: **the scheme is well balanced iff `P(0) = 0`.** True
+for Roe and Osher, false for LF and PRICE. Recorded as a `well_balanced` flag per scheme;
+`ClassicalSimulation1D` warns when topography meets a scheme that lacks it.
+
 **Mandatory validation before trusting this in production:** implement a dedicated
 lake-at-rest regression test (flat free surface over non-flat, non-trivial `Z(x)`, zero
 initial velocity/moments, run forward in time, assert the state stays at machine-precision
 rest) as part of the same PR that adds this feature. This is flagged as a genuinely
 research-level numerical question in the design research — budget real validation time,
 don't just assume the formula above is bug-free on first implementation.
+**Done** — `tests/test_topography.py`, six bed shapes × N=0,1,2 plus HSWME/viscous/recharge
+variants; both corrections above were found by that validation, exactly as anticipated.
 
 ### 2.3 Wet-dry treatment
 
@@ -476,6 +503,7 @@ recharge-paper/                        # repo root is the uv project root
 │   │   ├── __init__.py
 │   │   ├── coefficients.py            # §1, absorbs symbolic_math/symbo.py math
 │   │   ├── source_terms.py            # §1, base Navier-slip friction ONLY (not recharge)
+│   │   ├── topography.py             # NEW — Step 5: bed profiles Z(x) + settings
 │   │   ├── mesh.py                    # + bed_elevation — §2.1
 │   │   ├── pde.py                     # SWME1D only, genericized — §1/§2
 │   │   ├── spatialDiscretization.py   # + augmented-path topography — §2.2
@@ -737,7 +765,7 @@ steps — they're what makes the hardcoded-block deletions safe.
       what actually wires the generic engine in and will need this exact end-to-end check
       re-run afterward, since deleting the buggy order=6 block means an order=6 run's
       *numbers* will legitimately change — for the better).
-- [ ] **Step 3 — swap in the generic engine** *(the generic implementations themselves are
+- [x] **Step 3 — swap in the generic engine** *(the generic implementations themselves are
       already written and regression-tested per Step 2 below — `swme.pde._compute_system_matrix_generic`,
       `swme.source_terms.{compute_navier_slip_friction,compute_friction_operator_matrix}`,
       `recharge.source_terms.{compute_recharge_mass_source,compute_mixing_friction,compute_total_friction}`
@@ -963,9 +991,219 @@ steps — they're what makes the hardcoded-block deletions safe.
       §5.3, §5.4, and §5.5's figures are generated and available for the user's own
       figure-by-figure comparison against the stored thesis output; no closed form exists to
       check them against automatically.
-- [ ] **Step 5 — topography + well-balancing**: `mesh.py` bed elevation field, augmented
+- [x] **Step 5 — topography + well-balancing**: `mesh.py` bed elevation field, augmented
       `(U,Z)` path in `spatialDiscretization.py`, wiring in `simulation.py`. Write the
       lake-at-rest regression test as part of this step, not after.
+      **DONE.** The augmented-path design of §2.2 worked essentially as drafted; the two
+      substantive corrections to it are recorded below. New/changed files:
+        - **`swme/topography.py` (NEW, ~200 lines)**: seven bed profiles
+          (`flat`, `linear_slope`, `gaussian_bump`, `parabolic_bump` — the classical
+          Goutal-Maisonneuve bump —, `sinusoidal`, `step`, `tanh_step`) behind
+          `get_bed_profile(name, **params)`, plus the frozen `TopographySettings`
+          dataclass. An unknown *parameter* raises `TypeError` rather than being ignored:
+          a silently dropped typo in a config would produce a plausible-looking but wrong
+          bed.
+        - **`swme/mesh.py`**: `UniformRectangularMesh1D` gained `bed_elevation` (shape
+          `resolution+2`, indexed exactly like the state array, ghost cells included),
+          `bed_elevation_function`, `has_topography`, and `set_bed_elevation(z_of_x,
+          boundary_condition)`. The ghost fill takes the boundary condition as an argument
+          and mirrors `_update_boundary_conditions` exactly (PERIODIC wraps, everything
+          else is zero-gradient) — otherwise the two edge interfaces would see an
+          inconsistent `(U, Z)` pair.
+        - **`swme/pde.py`**: `_compute_augmented_system_matrix_generic` (module level) and
+          `SWME1D.compute_augmented_system_matrix` (validated wrapper), plus the two
+          topography-aware initial conditions `lakeAtRest` and `perturbedLakeAtRest`.
+          `SWME1D.__init__` gained one optional `topography: TopographySettings | None`
+          kwarg (`RechargeSWME1D` forwards it), needed only because those two ICs cannot be
+          written as a function of position alone.
+        - **`swme/spatialDiscretization.py`**: a `well_balanced` class flag — see the
+          finding below. No change to any scheme's arithmetic.
+        - **`swme/simulation.py`**: the augmented branch of the interface loop.
+        - **`swme/main.py`**: optional `[topography]` config section, and two runnable
+          configs `topography_lake_at_rest` / `topography_perturbed_lake`.
+
+      **Correction #1 — the sign of the bed-slope entry.** §2.2 above sketched the
+      augmented column as `-g*h*e_momentum`. That is the sign the bed-slope term carries as
+      a *right-hand-side source*; moved onto the left-hand side into the transport matrix,
+      where the augmented formulation puts it, it is **`+g*h`**. With the drafted sign the
+      momentum row of `Ã·ΔW` at a lake at rest evaluates to `g*h*(Δh - ΔZ) = 2*g*h*Δh`
+      instead of `g*h*Δ(h+Z) = 0`, i.e. the scheme would have been maximally *anti*-balanced
+      — every bed feature would have acted as a doubled spurious forcing. §2.2 has been
+      corrected in place, the derivation is written out in the docstring of
+      `_compute_augmented_system_matrix_generic`, and
+      `test_the_sign_of_the_bed_column_is_what_makes_this_work` pins it by asserting that
+      flipping just that one entry breaks the C-property.
+
+      **Correction #2 — well-balancing is a property of the *scheme*, not just the
+      coupling.** §2.2 claimed the augmented path "recovers the C-property" full stop. That
+      is only half true and the other half matters. The augmented matrix annihilates the
+      equilibrium jump by construction, so the *central* part of the fluctuation vanishes
+      for every scheme; but the fluctuation is `(1/2)(Ã ± Q)ΔW`, so the numerical viscosity
+      `Q` has to annihilate it too. Writing `Q = P(Ã)` for the scheme's viscosity
+      polynomial, the equilibrium jump lies in `ker(Ã)`, hence `Q·ΔW = P(0)·ΔW`: **a PVM
+      scheme is well balanced exactly when `P(0) = 0`.** That holds for **Roe** (`P(x)=|x|`)
+      and **Osher**, and fails for **LF** (`P(x) = Δx/Δt`) and **PRICE**
+      (`P(x) = Δx/(2Δt) + Δt/(2Δx)·x²`), whose constant terms leave an `O(Δx/Δt · Δh)`
+      residual at rest. This is not fixable by tuning the coupling — it is structural to
+      those schemes. Handled by recording it as a `well_balanced` class flag on each scheme,
+      asserting both branches of it in the tests, and having
+      `ClassicalSimulation1D.run_simulation` emit a `RuntimeWarning` if topography is active
+      under a non-well-balanced scheme. Not a practical restriction for this repo: **all 20
+      thesis configs already use `pvm = Roe`**.
+
+      **Strictly additive, verified.** `has_topography` is derived from whether the sampled
+      bed is actually non-zero, not from `set_bed_elevation` merely having been called, so
+      `bed_profile = flat` leaves the solver on its original non-augmented path rather than
+      on a numerically-equivalent-but-different one. Confirmed two ways: a unit test
+      asserting *bit-identical* (`assert_array_equal`) output with and without an explicit
+      flat bed; the end-to-end reference run, which still reproduces
+      `total mass = 242.1436312896249` exactly; and re-running six Chapter 5 thesis configs
+      (§5.1 ×3, §5.2, §5.6 ×2) and byte-comparing (`cmp`) their CSVs against the ones
+      already in `results/` from Step 4.5 — **30 files, 30 identical, 0 differing**. The
+      thesis validation of Step 4.5 therefore still stands unchanged after this step; it
+      does not need redoing. A separate test runs the same problem
+      over a *constant nonzero* bed — physically identical, but it does switch on the
+      augmented path — and confirms the two agree, which is the cross-check that the
+      augmented path reproduces the plain one.
+
+      **One footgun closed while wiring this up.** The bed's ghost cells have to be filled
+      with the *same* boundary condition the simulation runs with, or the two edge
+      interfaces see an inconsistent `(U, Z)` pair — a silent wrong answer localized enough
+      to look like a plausible physical result. `set_bed_elevation` now records which
+      boundary condition it used and `run_simulation` refuses to start on a mismatch.
+
+      **Validation — `tests/test_topography.py`, 123 tests** (suite 303 → 426, all passing).
+      Layered deliberately, cheapest first:
+        - the bed-profile library and the mesh's sampled bed with its ghost cells (both
+          boundary conditions);
+        - structure of `Ã`: top-left block is *exactly* `compute_system_matrix` (N=0..5 ×
+          hyperbolic on/off), `Ã[1,n] = +g·h`, rest of the bed column zero, bed row zero;
+        - **the algebraic C-property**: `Ã(W(s))·ΔW = 0` at all five Gauss nodes of the path,
+          for N=0..6 × hyperbolic on/off × 20 random lake-at-rest jumps, to `< 1e-13` — plus
+          a negative control (a *non*-equilibrium jump must NOT be annihilated) so the test
+          cannot pass for the trivial reason of an all-zero matrix;
+        - **the scheme-level C-property**: single-interface fluctuations `< 1e-13` for Roe
+          and Osher, and `> 1e-3` for LF and PRICE (the limitation asserted, not hidden),
+          plus a full end-to-end run under Osher as well as Roe;
+        - **the mandatory end-to-end lake-at-rest regression**: full `ClassicalSimulation1D`
+          runs over six beds (Gaussian bump, parabolic bump, discontinuous step, tanh step,
+          linear slope, sinusoidal-on-periodic) × N=0,1,2, asserting `|h+Z-H| < 1e-12` and
+          `|u_m|, |a_i| < 1e-12`; repeated for HSWME, for a viscous run (friction must not
+          inject anything at zero velocity), and for `RechargeSWME1D` with zero forcing;
+        - a *liveness* counterpart, so "at rest" is not passing by inertness: a 1e-3
+          free-surface perturbation must actually propagate, and must stay of its own order
+          rather than the bed's.
+      The discontinuous `step` bed is included on purpose: it is the hardest case, since the
+      equilibrium jump across the step interface is O(1) rather than O(Δx).
+
+      **Drift is genuinely zero, not merely small.** The suite's `1e-12` tolerances are
+      loose on purpose (they have to survive a future change of scheme or CFL number), so
+      the actual figures were measured separately on deliberately long runs — N=2, 200
+      cells, `t_end = 5.0`, ~1400 steps:
+
+      | bed | `max｜h+Z-H｜` | `max｜u_m｜` | `max｜a_i｜` |
+      |---|---|---|---|
+      | parabolic bump | 2.2e-16 (one ULP of `H=2`) | 5.8e-16 | 0.0 exactly |
+      | discontinuous step | **0.0 exactly** | 1.8e-15 | 0.0 exactly |
+
+      There is no slow leak: the fluctuations are zero to round-off at *every* step rather
+      than small-and-accumulating, which is why 1400 steps are no worse than one. The same
+      holds through the real CLI — `uv run moment-sw --config topography_lake_at_rest`
+      reports `2.2e-16` for its Σ h·u_m diagnostic.
+
+      **Not done here, deliberately.** A bed poking above the reference water level raises a
+      clear error at IC construction rather than producing a dry cell — wet-dry is Step 6,
+      and until it lands the solver genuinely cannot represent `h <= 0`. Moving-water steady
+      states (the other classical topography benchmark) are out of scope: the C-property is
+      what §2.2 committed to.
+- [x] **Step 5.5 — hyperbolicity audit: SWME vs. HSWME** *(inserted at the user's request
+      after Step 5, prompted by a `ComplexWarning` noticed during Step 5's verification.
+      Complex eigenvalues of the transport matrix are the signature of hyperbolicity loss,
+      which for a moment model is the difference between a well-posed problem and
+      plausible-looking garbage, so this was worth resolving before adding more numerics.)*
+      **DONE.** `tests/test_hyperbolicity.py`, 99 tests (suite 426 → 525).
+
+      **First finding — the warning was a red herring, and that is itself the bug.**
+      `ComplexWarning` is *not* a hyperbolicity signal in this environment. **numpy 2.x no
+      longer down-casts `np.linalg.eig` output to real** when the spectrum happens to be
+      real; it returns `complex128` unconditionally. Verified on numpy 2.5.1:
+      `np.linalg.eig(np.eye(2))` already yields complex dtype. So the warning fired on
+      *every* Roe step of *every* run regardless of hyperbolicity — 100% false-positive
+      rate — which is exactly why it read as harmless background noise. The real defect was
+      therefore the opposite of the one it appeared to report: **a genuine loss of
+      hyperbolicity was indistinguishable from normal operation**, since it produced the
+      same always-on warning. Confirmed by direct measurement: in the runs that emitted the
+      warning, `max|Im(λ)| = 0.0` exactly.
+
+      **Fixed** by making the viscosity explicitly real (`np.real(R|D|R⁻¹)` in `Roe` and
+      `Osher`) and adding a real detector in its place. `np.real` is bit-identical rather
+      than a truncation, for two independent reasons: numpy's implicit cast on assignment
+      was already doing exactly this, and a real matrix's complex eigenvalues come in
+      conjugate pairs with equal moduli and conjugate eigenvectors, so their contributions
+      to `R|D|R⁻¹` sum to something real either way. Verified: reference run still
+      `242.1436312896249`, and re-running thesis configs gives byte-identical CSVs.
+
+      **The detector.** `SpatialDiscretization` now carries `spectra_examined`,
+      `nonhyperbolic_count` and `max_abs_imaginary_eigenvalue`, updated from the eigenvalues
+      the scheme has *already computed* for its viscosity (so the cost is one `max`-`abs`
+      per interface, not an extra eigensolve). `run_simulation` resets them per run and
+      raises a `RuntimeWarning` naming the count and the worst `|Im(λ)|` if any interface
+      went complex. The pre-existing `store_hyperbolicity` config option was already
+      correct — it measures `max_abs_imag` directly rather than sniffing dtypes — and is
+      unchanged; it is the detailed per-cell log, this is the always-on summary.
+
+      **The physics, measured.** Hyperbolicity depends *only* on `alpha_i/sqrt(g*h)`:
+      verified Galilean invariant (shifting `u_m` leaves `Im(λ)` bit-for-bit unchanged) and
+      exactly linear under `h → c²h, alpha → c·alpha`. So the maps below are universal.
+        - **N=0 and N=1 SWME are unconditionally hyperbolic.** The N=1 spectrum is exactly
+          `{u_m, u_m ± sqrt(g*h + alpha_1²)}` — verified against the closed form to 7e-14
+          out to `|alpha_1| = 50`. At those orders HSWME *is* SWME (there is no
+          `alpha_2..alpha_N` to regularize), so **no N≤1 run can ever lose hyperbolicity**,
+          whatever the rainfall forcing does.
+        - **From N=2 up, SWME does lose it**, and the fraction of state space affected grows
+          fast (uniform sampling, `h ∈ [0.2,4]`, `|alpha| ≤ 3`, 20k states/order):
+
+          | N | SWME non-hyperbolic | HSWME non-hyperbolic |
+          |---|---|---|
+          | 1 | 0.00 % | 0.00 % |
+          | 2 | 3.07 % | 0.00 % |
+          | 3 | 11.24 % | 0.00 % |
+          | 4 | 21.06 % | 0.00 % |
+          | 5 | 34.59 % | 0.00 % |
+          | 6 | 48.03 % | 0.00 % |
+
+        - **The N=2 unstable set is a narrow wedge, not a magnitude threshold** — a
+          genuinely counter-intuitive result that matters for choosing a safety criterion.
+          It is confined to slopes `|alpha_2/alpha_1| ∈ [1.14, 1.40]`; *every* ray outside
+          that slope range stays hyperbolic at every magnitude probed (to
+          `|alpha|/sqrt(g*h) = 60`). Concretely `alpha = (1.5, 1.8)` is non-hyperbolic while
+          the strictly larger `alpha = (2.0, 3.0)` is fine. "Keep the moments small" is
+          therefore the wrong mental model; the ratio is what matters. Pinned in a test.
+        - **HSWME never loses hyperbolicity**, at any order tested (0 of 20 000 states at
+          each of N=1..6, `max|Im| = 0.0` exactly), and it repairs every sampled state that
+          breaks SWME. Its mechanism is visible in the spectrum: zeroing `alpha_2..alpha_N`
+          in the transport matrix makes the eigenvalues independent of those moments
+          entirely, while preserving the outer wave speeds `u_m ± sqrt(g*h + alpha_1²)`.
+          Both properties are asserted as tests.
+
+      **Audit of the actual thesis runs — clean, with structural margin.** Every state the
+      Chapter 5 simulations visited was replayed through both closures, straight from the
+      validated `results/` CSVs (batched `eigvals`, no re-running):
+      **14 417 060 states across all 20 runs, zero hyperbolicity loss, for SWME and HSWME
+      alike.** The margin is not luck: the largest scaled moment reached anywhere is
+      `|alpha_1|/sqrt(g*h) = 0.71`, and more to the point the thesis initial conditions set
+      `alpha_2 = -0.5·alpha_1`, a ray with slope `|s| = 0.5` that lies outside the unstable
+      wedge and therefore stays hyperbolic **at any magnitude** — confirmed to
+      `|alpha_1|/sqrt(g*h) = 200`, `max|Im(λ)| = 0.0`. **The Chapter 5 results are not
+      affected by this issue at all**, and the Step 4.5 validation stands unchanged.
+
+      **Consequence for later steps.** Step 6's wet-dry treatment will drive `h → 0`, and
+      hyperbolicity depends on `alpha/sqrt(g*h)` — so the *scaled* moments blow up in a
+      drying cell even when the raw ones are tiny. That is precisely the regime this audit
+      says is dangerous, and it is an argument for the moment ramp already planned in §2.3
+      (`alpha_eff = alpha * ramp`, moments → plug flow as `h → h_dry`), which suppresses the
+      scaled moments exactly where they would otherwise diverge. Re-check this audit after
+      Step 6.
 - [ ] **Step 6 — wet-dry treatment**: `eps_div`/`h_dry`/`h_wet` params, desingularized
       primitive extraction, moment ramp, drying-timestep limiter, demote the hard-crash
       `RuntimeError` to a debug assertion. Write a wet-dry regression test (e.g. a

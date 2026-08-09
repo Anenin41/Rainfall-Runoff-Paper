@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+import warnings
+
 import numpy as np
 from . import pde
 from . import mesh
@@ -388,6 +390,11 @@ class ClassicalSimulation1D(Simulation):
 
         CFL = 0.5 #TODO: put CFL number in config file
         t = 0
+
+        # Fresh counters per run, so a reused scheme object does not carry a
+        # previous run's hyperbolicity loss into this one's report.
+        if hasattr(self.spatial_discretization, 'reset_hyperbolicity_diagnostics'):
+            self.spatial_discretization.reset_hyperbolicity_diagnostics()
         
         # Initialize history storage if enabled.
         # The initial condition is stored as snapshot 0 so that exported histories
@@ -405,6 +412,63 @@ class ClassicalSimulation1D(Simulation):
         def source_term(cell_values,delta_t):
             return self.pde_type.compute_source_term(self.order,cell_values,delta_t)
 
+        # Bottom topography (RESTRUCTURE_PLAN.md Step 5).
+        #
+        # A non-flat bed is coupled in by widening the path-conservative state
+        # from U to W = (U, Z) and integrating the augmented system matrix
+        # A~(W) along the same linear path the moment transport already uses -
+        # see pde._compute_augmented_system_matrix_generic. The Z row of the
+        # resulting fluctuation is identically zero (the bed does not evolve),
+        # so only the first `number_of_variables` entries are kept.
+        #
+        # `mesh.has_topography` is False for a bed that is zero everywhere, so
+        # a flat-bed run never enters the augmented path and reproduces
+        # pre-topography results bit for bit.
+        use_topography = bool(getattr(self.mesh, "has_topography", False))
+        if use_topography:
+            bed_elevation = np.asarray(self.mesh.bed_elevation, dtype=np.float64)
+            if bed_elevation.shape != (self.mesh.resolution + 2,):
+                raise ValueError(
+                    "mesh.bed_elevation must have one entry per cell including "
+                    f"ghost cells, i.e. shape ({self.mesh.resolution + 2},), "
+                    f"got {bed_elevation.shape}."
+                )
+            bed_boundary = getattr(self.mesh, "bed_boundary_condition", None)
+            if bed_boundary is not None and bed_boundary != self.boundary_condition:
+                raise ValueError(
+                    f"The bed was sampled with boundary condition "
+                    f"'{bed_boundary}' but this simulation runs with "
+                    f"'{self.boundary_condition}'. The two ghost cells of Z "
+                    "must be filled the same way the state's are, or the "
+                    "interfaces at the domain edges see an inconsistent "
+                    "(U, Z) pair."
+                )
+            if not hasattr(self.pde_type, "compute_augmented_system_matrix"):
+                raise NotImplementedError(
+                    f"{type(self.pde_type).__name__} has no "
+                    "compute_augmented_system_matrix, so it cannot be run over "
+                    "non-flat bottom topography."
+                )
+            if not getattr(self.spatial_discretization, "well_balanced", False):
+                warnings.warn(
+                    f"{type(self.spatial_discretization).__name__} is not "
+                    "well balanced over topography: its numerical viscosity "
+                    "has a nonzero constant term, so a lake at rest will not "
+                    "be preserved exactly. Use Roe or Osher for topography "
+                    "runs (see SpatialDiscretization.well_balanced).",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+            # Reused per interface instead of reallocating (order+3,) twice
+            # per interface per step; compute_fluctuation only reads them.
+            augmented_left = np.empty(self.number_of_variables + 1)
+            augmented_right = np.empty(self.number_of_variables + 1)
+
+            def augmented_system_matrix(augmented_values):
+                return self.pde_type.compute_augmented_system_matrix(
+                    self.order, augmented_values)
+
         while t < t_end:
 
             # update boundary conditions
@@ -416,13 +480,33 @@ class ClassicalSimulation1D(Simulation):
 
             delta_t = CFL*delta_x/max_speed 
 
-            for i in range(self.mesh.resolution+1):
-                fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
-                    values[i,:],
-                    values[i+1,:],
-                    system_matrix,
-                    delta_t,
-                    delta_x)          
+            if use_topography:
+                n_var = self.number_of_variables
+                for i in range(self.mesh.resolution+1):
+                    augmented_left[:n_var] = values[i,:]
+                    augmented_left[n_var] = bed_elevation[i]
+                    augmented_right[:n_var] = values[i+1,:]
+                    augmented_right[n_var] = bed_elevation[i+1]
+
+                    fluctuation_min, fluctuation_plus = self.spatial_discretization.compute_fluctuation(
+                        augmented_left,
+                        augmented_right,
+                        augmented_system_matrix,
+                        delta_t,
+                        delta_x)
+
+                    # Drop the Z row: it is zero by construction, and the
+                    # state array has no Z column to write it into.
+                    fluctuations_min[i,:] = fluctuation_min[:n_var]
+                    fluctuations_plus[i,:] = fluctuation_plus[:n_var]
+            else:
+                for i in range(self.mesh.resolution+1):
+                    fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
+                        values[i,:],
+                        values[i+1,:],
+                        system_matrix,
+                        delta_t,
+                        delta_x)
 
             for i in range(1,self.mesh.resolution+1):
                 values[i,:] = values[i,:] - delta_t/delta_x*(fluctuations_plus[i-1,:]+fluctuations_min[i,:])
@@ -471,6 +555,29 @@ class ClassicalSimulation1D(Simulation):
             # Store history snapshot if enabled
             self._store_snapshot(values, step = step, time = t)
             self._store_hyperbolicity_snapshot(values, step = step, time = t)
+
+        # Hyperbolicity report. The scheme has already eigendecomposed the
+        # transport matrix at every interface to build its viscosity, so this
+        # costs nothing extra to collect - and without it a run whose spectrum
+        # left the real axis finishes looking exactly like one that did not.
+        # SWME is only unconditionally hyperbolic for N <= 1; from N = 2 up it
+        # can lose hyperbolicity at large moments, which is what HSWME
+        # (`hyperbolic=True`) is for. See tests/test_hyperbolicity.py.
+        nonhyperbolic = getattr(self.spatial_discretization,
+                                'nonhyperbolic_count', 0)
+        if nonhyperbolic:
+            examined = self.spatial_discretization.spectra_examined
+            warnings.warn(
+                f"Loss of hyperbolicity: {nonhyperbolic} of {examined} "
+                f"interface spectra had complex eigenvalues (largest "
+                f"|Im(lambda)| = "
+                f"{self.spatial_discretization.max_abs_imaginary_eigenvalue:.3e}"
+                f"). The N={self.order} SWME system is not globally hyperbolic; "
+                "results past this point are not trustworthy. Re-run with the "
+                "hyperbolic (HSWME) variant of the model.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         simulation_data = self._post_processing(values)
         return simulation_data

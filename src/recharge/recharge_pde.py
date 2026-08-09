@@ -3,6 +3,7 @@ import numpy as np
 
 # Local imports
 from swme.pde import SWME1D
+from swme.topography import TopographySettings
 from .context import SourceContext
 from .source_terms import compute_recharge_mass_source, compute_total_friction
 
@@ -33,6 +34,7 @@ class RechargeSWME1D(SWME1D):
             infiltration_model : object,
             mixing_friction_model : object,
             eps_dry : float = 1e-14,
+            topography : TopographySettings | None = None,
     ):
         # Inherit from the parent class stuff which are the same
         super().__init__(
@@ -41,6 +43,7 @@ class RechargeSWME1D(SWME1D):
             slip_length = slip_length,
             hyperbolic = hyperbolic,
             linear_source = linear_source,
+            topography = topography,
         )
 
         # Initialize recharge specific attributes

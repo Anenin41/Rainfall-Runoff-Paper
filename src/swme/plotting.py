@@ -147,8 +147,20 @@ class SWME1DPlotClassical(Plotting):
         plt.title('Velocity profile')
 
         plt.subplot(3,3,2)
-        plt.plot(self.mesh.cell_center_positions, data_array[:,1])
-        plt.title('Height')
+        if getattr(self.mesh, 'has_topography', False):
+            # Over a non-flat bed the water depth h on its own is close to
+            # unreadable - a lake at rest looks like an inverted bump. Show
+            # the free surface h + Z against the bed instead, which is what
+            # the well-balancing property is actually about.
+            bed = self.mesh.bed_elevation[1:self.mesh.resolution+1]
+            plt.plot(self.mesh.cell_center_positions, data_array[:,1] + bed,
+                     label='h + Z')
+            plt.plot(self.mesh.cell_center_positions, bed, 'k-', label='Z')
+            plt.legend(fontsize='small')
+            plt.title('Free surface over bed')
+        else:
+            plt.plot(self.mesh.cell_center_positions, data_array[:,1])
+            plt.title('Height')
 
         plt.subplot(3,3,3)
         plt.plot(self.mesh.cell_center_positions, data_array[:,2])

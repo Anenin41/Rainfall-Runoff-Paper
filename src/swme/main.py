@@ -13,6 +13,7 @@ from . import mesh
 from . import spatialDiscretization
 from . import timeIntegration
 from . import plotting
+from . import topography as topography_module
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -43,6 +44,73 @@ except ImportError:
     HAS_RECHARGE = False
 
 DEFAULT_CONFIG = _PACKAGE_DIR / 'config' / 'config.ini'
+
+# Keys of the optional [topography] section that configure the *water*, not
+# the bed shape. Everything else in that section is forwarded to the chosen
+# bed profile as a float parameter.
+_TOPOGRAPHY_NON_PROFILE_KEYS = frozenset({
+    'bed_profile',
+    'reference_water_level',
+    'perturbation_amplitude',
+    'perturbation_center',
+    'perturbation_width',
+})
+
+
+def _build_topography(config) -> topography_module.TopographySettings:
+    """Build TopographySettings from the config's optional [topography] section.
+
+    A config without that section - i.e. every config written before
+    RESTRUCTURE_PLAN.md Step 5 - gets the default flat bed at zero, which
+    leaves `mesh.has_topography` False and the solver on its original
+    non-augmented path.
+
+    Recognized keys::
+
+        [topography]
+        bed_profile           = gaussian_bump   # see topography.get_bed_profile
+        reference_water_level = 1.0             # free surface H of a lake at rest
+        perturbation_amplitude = 0.0            # for 'perturbedLakeAtRest'
+        perturbation_center    = 0.0
+        perturbation_width     = 1.0
+        # ... any remaining keys are the bed profile's own float parameters,
+        # e.g. amplitude / center / width for gaussian_bump
+
+    An unknown profile parameter raises rather than being ignored: a silently
+    dropped typo would produce a plausible-looking but wrong bed.
+    """
+    if not config.has_section('topography'):
+        return topography_module.TopographySettings()
+
+    section = config['topography']
+    profile_name = section.get('bed_profile', fallback='flat')
+
+    profile_params = {}
+    for key in section:
+        if key in _TOPOGRAPHY_NON_PROFILE_KEYS:
+            continue
+        try:
+            profile_params[key] = section.getfloat(key)
+        except ValueError as exc:
+            raise ValueError(
+                f"[topography] parameter '{key}' must be a number, got "
+                f"'{section[key]}'."
+            ) from exc
+
+    bed_elevation = topography_module.get_bed_profile(
+        profile_name, **profile_params)
+
+    return topography_module.TopographySettings(
+        bed_elevation = bed_elevation,
+        reference_water_level = section.getfloat(
+            'reference_water_level', fallback=1.0),
+        perturbation_amplitude = section.getfloat(
+            'perturbation_amplitude', fallback=0.0),
+        perturbation_center = section.getfloat(
+            'perturbation_center', fallback=0.0),
+        perturbation_width = section.getfloat(
+            'perturbation_width', fallback=1.0),
+    )
 
 
 def _resolve_config(name_or_path) -> Path:
@@ -126,19 +194,25 @@ def main(argv=None):
     time_integrator = numerical_method_information['timeIntegrator']
     linear_source_implicit = linear_source and time_integrator == 'ImplicitEuler'
 
+    # Optional bottom topography; defaults to a flat bed at zero, i.e. exactly
+    # the pre-Step-5 behavior for every config without a [topography] section.
+    _topography = _build_topography(config)
+
     if pde_information['pde_type'] == 'SWME1D':
         _pde = pde.SWME1D(pde_information['initialCondition'],
                         pde_information.getfloat('viscosity'),
                         pde_information.getfloat('slipLength'),
                         False,
-                        linear_source_implicit)
+                        linear_source_implicit,
+                        topography = _topography)
     elif pde_information['pde_type'] == 'HSWME1D':
         _pde = pde.SWME1D(pde_information['initialCondition'],
                         pde_information.getfloat('viscosity'),
                         pde_information.getfloat('slipLength'),
                         True,
-                        linear_source_implicit)
-        
+                        linear_source_implicit,
+                        topography = _topography)
+
     elif pde_information['pde_type'] == 'RechargeSWME1D':
         if not HAS_RECHARGE:
             raise ImportError(
@@ -203,6 +277,7 @@ def main(argv=None):
             pde_information.getfloat('rainfall_rate'),
             infiltration_model,
             mixing_friction_model,
+            topography = _topography,
             )
     else:
         print('PDE_type is not implemented yet')
@@ -236,6 +311,24 @@ def main(argv=None):
 
         _mesh = mesh.UniformRectangularMesh1D([grid_information.getfloat('x1boundary'),grid_information.getfloat('x2boundary')],
                                                grid_information.getint('resolutionX')) #TODO: Implement different grids
+
+        # Sample the bed onto the grid (including ghost cells). Filled with
+        # the same boundary condition as the state, or the interface
+        # fluctuations at the domain edges would see an inconsistent (U, Z)
+        # pair. A bed that evaluates to zero everywhere leaves
+        # `_mesh.has_topography` False and the solver on its original path.
+        if _topography.bed_elevation is not None:
+            _mesh.set_bed_elevation(
+                _topography.bed_elevation,
+                numerical_method_information['boundaryCondition'],
+            )
+            if _mesh.has_topography:
+                print(
+                    "topography: "
+                    f"{config['topography'].get('bed_profile', 'flat')}, "
+                    f"Z in [{_mesh.bed_elevation.min():.6g}, "
+                    f"{_mesh.bed_elevation.max():.6g}]"
+                )
 
         # Only the classical (non-adaptive) driver remains; the spatially
         # adaptive and micro-macro drivers were removed in

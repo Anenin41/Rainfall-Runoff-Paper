@@ -28,6 +28,10 @@ import matplotlib.pyplot as plt
 # USER SETTINGS
 # =============================================================================
 
+# <project_root>/processing/ersoy_alpha_comparison.py -> parent.parent is the
+# project root, regardless of the caller's current working directory.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 plt.style.use("tableau-colorblind10")
 
 
@@ -55,9 +59,7 @@ class StandalonePlotConfig:
 
 # Edit this output directory if needed.
 CFG = StandalonePlotConfig(
-    output_dir=Path(
-        "/home/anenin/Documents/Git/thesis/model/processing/Ersoy/Comparison_Figures"
-    )
+    output_dir=PROJECT_ROOT / "results" / "Ersoy" / "Comparison_Figures"
 )
 
 
@@ -434,14 +436,18 @@ def plot_three_recharge_runs_momentum_velocity(
 
 if __name__ == "__main__":
 
-    # Edit this folder and filenames to match your actual files.
-    COMPARISON_DIR = Path(
-        "/home/anenin/Documents/Git/thesis/model/processing/Ersoy"
-    ).expanduser().resolve()
+    # Thesis §5.1 (rainfall-induced mixing-friction validation, Table 1):
+    # results/Ersoy/ErsoyData{0,1,2}/, produced by
+    # `scripts/run_thesis_configs.sh` from the thesis_5p1_mixing_aR{0,1,2}
+    # configs.
+    COMPARISON_DIR = PROJECT_ROOT / "results" / "Ersoy"
 
-    csv_alpha0 = COMPARISON_DIR / "ErsoyData0/recharge_swme_N0_constant_alpha0_field_history.csv"
-    csv_alpha1 = COMPARISON_DIR / "ErsoyData1/recharge_swme_N0_constant_alpha1_field_history.csv"
-    csv_alpha2 = COMPARISON_DIR / "ErsoyData2/recharge_swme_N0_constant_alpha2_field_history.csv"
+    # Plain filenames (no _alphaN suffix): the alpha_R value is distinguished
+    # by folder (ErsoyData{0,1,2}), matching src/swme/main.py's actual output
+    # naming - see scripts/run_thesis_configs.sh's CASES mapping.
+    csv_alpha0 = COMPARISON_DIR / "ErsoyData0/recharge_swme_N0_constant_field_history.csv"
+    csv_alpha1 = COMPARISON_DIR / "ErsoyData1/recharge_swme_N0_constant_field_history.csv"
+    csv_alpha2 = COMPARISON_DIR / "ErsoyData2/recharge_swme_N0_constant_field_history.csv"
 
     plot_three_recharge_runs_momentum_velocity(
         csv_alpha0=csv_alpha0,

@@ -1538,10 +1538,11 @@ def main() -> None:
     comp_cfg = load_comparison_config()
         
     if comp_cfg is not None and comp_cfg["enabled"]:
-        COMPARISON_DIR = Path(
-            "/home/anenin/Documents/Git/thesis/model/processing/Ersoy"
-        ).expanduser().resolve()
-        
+        # Thesis §5.1: results/Ersoy/ErsoyData{0,1,2}/, produced by
+        # scripts/run_thesis_configs.sh. The [comparison] alphaN_file config
+        # keys are paths relative to this directory.
+        COMPARISON_DIR = ROOT / "results" / "Ersoy"
+
         plot_three_recharge_runs_momentum_velocity(
             COMPARISON_DIR / comp_cfg["alpha0_file"],
             COMPARISON_DIR / comp_cfg["alpha1_file"],

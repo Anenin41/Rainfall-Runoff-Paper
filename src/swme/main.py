@@ -302,15 +302,22 @@ def main(argv=None):
                     f"{len(primitive_columns)} columns."
                 )
 
-            # Define output prefix for recharge results. The config stem is
-            # included so that runs differing only in parameters the tag does
-            # not capture (e.g. alpha_R, boundary condition, end time) land in
-            # distinct files instead of silently overwriting one another.
+            # Define output prefix for recharge results. Deliberately the
+            # plain legacy pattern (no config-name prefix): the processing/
+            # scripts' ROOT_DIR-based comparisons expect exactly this naming
+            # inside a per-case subfolder, e.g.
+            # <root>/Non_Wrapping_Pulse_N1/recharge_swme_N1_constant_field_history.csv.
+            # Uniqueness across runs is the CALLER's responsibility via
+            # --output-dir (one directory per case) - see
+            # scripts/run_thesis_configs.sh, which does exactly that. Two
+            # configs sharing one --output-dir will still silently overwrite
+            # each other; this was a real bug found while validating the
+            # thesis §5.1 cases (RESTRUCTURE_PLAN.md Step 4.5), traded off
+            # here in favor of matching the already-written comparison
+            # scripts instead of updating all of them to a new naming scheme.
             model_tag = "hswme" if _pde.hyperbolic else "swme"
-            case_tag = config_path.stem
             output_prefix = os.path.join(
-                output_dir,
-                f"{case_tag}__recharge_{model_tag}_N{order}_{infiltration_type}",
+                output_dir, f"recharge_{model_tag}_N{order}_{infiltration_type}"
             )
 
             # Final snapshot
@@ -365,14 +372,20 @@ def main(argv=None):
                     f"{output_prefix}_summary_history.csv", index=False,
                 )
 
-                # Store hyperbolicity CSVs. Named per-run like the others, so
-                # successive cases do not overwrite each other's diagnostics.
+                # Store hyperbolicity CSVs. Plain (not prefixed by order/tag)
+                # to match what processing/*.py's ROOT_DIR-based comparisons
+                # expect inside each case's own output directory:
+                # "recharge_hyperbolicity_summary.csv", not an order-suffixed
+                # name - one output directory per case (see
+                # scripts/run_thesis_configs.sh) is what keeps these unique.
                 pd.DataFrame(_simulation.hyperbolicity_history).to_csv(
-                    f"{output_prefix}_hyperbolicity_history.csv", index = False,
+                    os.path.join(output_dir, "recharge_hyperbolicity_history.csv"),
+                    index = False,
                 )
 
                 pd.DataFrame(_simulation.hyperbolicity_summary).to_csv(
-                    f"{output_prefix}_hyperbolicity_summary.csv", index = False,
+                    os.path.join(output_dir, "recharge_hyperbolicity_summary.csv"),
+                    index = False,
                 )
 
         stop = timeit.default_timer()

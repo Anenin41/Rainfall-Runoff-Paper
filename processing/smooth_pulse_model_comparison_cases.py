@@ -66,10 +66,15 @@ from pandas import col
 
 
 # =============================================================================
-# Absolute paths and case settings
+# Paths and case settings
 # =============================================================================
 
-ROOT_DIR = Path("/home/anenin/Documents/Git/thesis/model/processing/Smooth_Pulse/")
+# Thesis §5.4 (mild/aggressive periodic Horton pulse test):
+# results/Smooth_Pulse/Smooth_Pulse_N{0,1,2}_{Mild,Aggressive}/, produced by
+# scripts/run_thesis_configs.sh from the thesis_5p4_horton[_aggressive]_N{0,1,2}
+# configs.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROOT_DIR = PROJECT_ROOT / "results" / "Smooth_Pulse"
 
 # Use ("Mild",) to generate only the mild comparison.
 # Use ("Aggressive",) to generate only the aggressive comparison.

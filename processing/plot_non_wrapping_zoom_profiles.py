@@ -29,7 +29,10 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
 # User settings
 # =============================================================================
 
-ROOT_DIR = Path("/home/anenin/Documents/Git/thesis/model/processing/Non_Wrapping_Pulse")
+# Thesis §5.3: results/Non_Wrapping_Pulse/Non_Wrapping_Pulse_N{0,1,2}/,
+# produced by scripts/run_thesis_configs.sh.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROOT_DIR = PROJECT_ROOT / "results" / "Non_Wrapping_Pulse"
 
 OUTPUT_DIR = ROOT_DIR / "Non_Wrapping_Pulse_Comparison_Figures"
 

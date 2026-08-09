@@ -43,10 +43,13 @@ from matplotlib.ticker import MaxNLocator
 
 
 # =============================================================================
-# Absolute paths and user settings
+# Paths and user settings
 # =============================================================================
 
-ROOT_DIR = Path("/home/anenin/Documents/Git/thesis/model/processing/Dry_Wet_Test")
+# Thesis §5.6 zoomed profiles - see dry_wet_ablation_comparison.py's header
+# comment for the "Dry"/"Wet" naming note. results/Dry_Wet_Test/{Dry,Wet}_N{1,2}/.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROOT_DIR = PROJECT_ROOT / "results" / "Dry_Wet_Test"
 
 OUTPUT_DIR = (
     ROOT_DIR

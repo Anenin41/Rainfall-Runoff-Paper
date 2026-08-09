@@ -45,7 +45,14 @@ import matplotlib.pyplot as plt
 # Absolute paths and user settings
 # =============================================================================
 
-ROOT_DIR = Path("/home/anenin/Documents/Git/thesis/model/processing/Dry_Wet_Test")
+# Thesis §5.6 (moment-cascade source-free/source-active ablation): "Dry" =
+# source-free, "Wet" = source-active (naming predates this restructure - see
+# RESTRUCTURE_PLAN.md Step 4.5 - nothing to do with actual dry-cell/wet-dry
+# numerics, which do not exist yet). results/Dry_Wet_Test/{Dry,Wet}_N{1,2}/,
+# produced by scripts/run_thesis_configs.sh from the
+# thesis_5p6_source_{free,active}_N{1,2} configs.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROOT_DIR = PROJECT_ROOT / "results" / "Dry_Wet_Test"
 OUTPUT_DIR = ROOT_DIR / "Dry_Wet_Comparison_Figures"
 
 REGIMES = ("Dry", "Wet")

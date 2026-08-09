@@ -14,10 +14,13 @@ runs on the arbitrary-N generic engine (all hardcoded per-order blocks gone, the
 tests pass against golden reference values captured from the legacy code before deletion.
 Two real bugs were found and fixed on the way (Steps 2/3); Step 3 carries a documented
 ~1.7x runtime cost with an identified follow-up. **Step 4.5 then validated the whole
-refactor against the thesis's own analytical results** — §5.1 reproduces eq. (5.5) for all
-three `alpha_R` branches and §5.2 reproduces eqs. (5.9)-(5.10) to 3e-6 — and shipped a
-`--config` CLI plus 17 transcribed Chapter 5 test-case configs so the remaining
-(non-closed-form) baselines can be compared against stored thesis output.
+refactor against the thesis's own results, end to end**: a `--config` CLI, 20 transcribed
+Chapter 5 test-case configs, `scripts/run_thesis_configs.sh` to run them all into a
+`results/` layout, and all 7 `processing/*.py` figure-generation scripts (+
+`processing/config.ini`) repointed at that layout and confirmed running clean against real
+output. Three thesis equations check out numerically to high precision (§5.1 eq. 5.5, §5.2
+eqs. 5.9-5.10, §5.6 eq. 5.17), and §5.1's figure visually matches the thesis exactly;
+§5.3-§5.5 have no closed form but their figures now regenerate for direct comparison.
 **Step 5 (bottom topography + well-balancing) is next — the first step that adds genuinely
 new numerics rather than restructuring existing behavior, so the reference run's numbers
 will legitimately change from here on.**
@@ -884,12 +887,12 @@ steps — they're what makes the hardcoded-block deletions safe.
           7, which still owns the full YAML rewrite). `--config` accepts a path or the bare
           name of a config shipped in `swme/config/`. The console script `moment-sw` now
           resolves (`pyproject.toml` pointed at the not-yet-existent `swme.cli:main`; it
-          now points at `swme.main:main`). Output filenames gained the config-name prefix —
-          without it, runs differing only in a parameter absent from the old tag (e.g.
-          `alpha_R`) silently overwrote each other, which was found the hard way when the
-          three §5.1 runs collapsed onto one file. Hyperbolicity CSVs are likewise now
-          per-run instead of one global pair. `[postprocessing]` keys all take fallbacks,
-          so a config may omit the section.
+          now points at `swme.main:main`). Output filenames initially gained a config-name
+          prefix here to fix a real collision (three §5.1 runs sharing one output dir had
+          silently overwritten each other) — **this was reverted later in this same step**,
+          see "Repointing the processing/ scripts" below; the mechanism kept but the
+          filename scheme did not survive contact with the pre-existing comparison scripts.
+          `[postprocessing]` keys all take fallbacks, so a config may omit the section.
         - **17 thesis test-case configs** transcribed from the Chapter 5 runtime-parameter
           tables: `thesis_5p1_mixing_aR{0,1,2}`, `thesis_5p2_horton_at_rest`,
           `thesis_5p3_pulse_N{0,1,2}`, `thesis_5p4_horton_N{0,1,2}`,
@@ -906,9 +909,60 @@ steps — they're what makes the hardcoded-block deletions safe.
           depth h(1800) = 1.1694 (thesis: 1.1694), relative error 3.2e-6, flow stays exactly
           at rest (u_m = a_1 = 0) and spatially uniform.
       This is independent confirmation that the generic-N engine reproduces the physics the
-      thesis reports, not merely the legacy code's arithmetic. The remaining Chapter 5 cases
-      (§5.3-§5.6) have no closed form and are for the user to compare against their stored
-      figures/CSVs.
+      thesis reports, not merely the legacy code's arithmetic.
+
+      **Continuation, same step: full Chapter 5 sweep + figure reproduction.** §5.3-§5.6
+      have no closed form, so validating them means regenerating the actual thesis figures
+      from `processing/*.py` and eyeballing/diffing against the stored ones - which needed
+      three more pieces:
+        - **`thesis_5p4_horton_aggressive_N{0,1,2}` configs added** (3 more, 20 total): the
+          17 configs from the first pass only covered the "mild" §5.4 pulse;
+          `smooth_pulse_model_comparison_cases.py` (see below) needs an "aggressive" variant
+          too, using the already-existing `smooth_nested_profile_pulse_aggressive` IC in
+          `recharge/initial_conditions.py` with otherwise-identical parameters.
+        - **`scripts/run_thesis_configs.sh`** (new): runs a set of configs (all, or
+          name-filtered) sequentially or in parallel (`-j N`), one dedicated `--output-dir`
+          per case under `results/<Section>/<subfolder>/` (never shared - the exact fix for
+          the collision above), with a per-run log and a pass/fail summary. `results/` is
+          gitignored except that `!tests/data/` (unrelated) and this being at the repo root,
+          not under `processing/`, keep it out of the installable package.
+        - **Reverted the Step-4.5-added filename prefix** (see the note above) and
+          **repointed all 7 `processing/*.py` comparison scripts + `processing/config.ini`**
+          from their original hardcoded absolute paths
+          (`/home/anenin/Documents/Git/thesis/model/processing/...`, the original author's
+          machine) to `results/<Section>/...`. These scripts were purpose-built per thesis
+          figure/section with their own bespoke per-case subfolder-naming functions
+          (`run_folder`, `order_folder_name`, `case_folder`, etc.) already matching the
+          *filenames* `main.py` produces (`recharge_swme_N{order}_{tag}_{final,
+          field_history, summary_history}.csv`, `recharge_hyperbolicity_{summary,history}.csv`)
+          - so fixing this was a `ROOT_DIR`/`COMPARISON_DIR` repoint plus one filename-suffix
+          fix in `ersoy_alpha_comparison.py` (`_alphaN` in the filename removed; the folder
+          `ErsoyData{0,1,2}` already disambiguates), not a rewrite of their plotting logic:
+          | Script | Thesis section | `results/` subdirectory |
+          |---|---|---|
+          | `ersoy_alpha_comparison.py`, `plotter.py`'s `[comparison]` | §5.1 | `Ersoy/ErsoyData{0,1,2}/` |
+          | `plotter.py` (general single-run; `config.ini` default case) | §5.2 | `5p2_Horton_At_Rest/` |
+          | `non_wrapping_pulse_model_comparison.py`, `plot_non_wrapping_zoom_profiles.py` | §5.3 | `Non_Wrapping_Pulse/Non_Wrapping_Pulse_N{0,1,2}/` |
+          | `smooth_pulse_model_comparison_cases.py` | §5.4 | `Smooth_Pulse/Smooth_Pulse_N{0,1,2}_{Mild,Aggressive}/` |
+          | `inflow_outflow_comparison.py` | §5.5 | `Smooth_Pulse_Inflow_Outflow/Smooth_Pulse_Inflow_Outflow_N{0,1,2}/` |
+          | `dry_wet_ablation_comparison.py`, `zoomed_dry_wet_comparison.py` | §5.6 | `Dry_Wet_Test/{Dry,Wet}_N{1,2}/` ("Dry"/"Wet" = source-free/source-active, a pre-existing naming choice - nothing to do with real dry-cell numerics, which don't exist yet) |
+
+      **Result: all 20 configs succeeded** (`scripts/run_thesis_configs.sh`, no filter,
+      `-j 4`; wall time dominated by the four §5.4/§5.5 N=1/N=2 cases at ~1000-1300s each,
+      450 cells × t_end=1.8), and **all 8 processing scripts ran clean** (exit 0) against the
+      real output, each producing its documented figure set with no code changes to their
+      plotting logic. Spot-checked further:
+        - **§5.1** (`ersoy_alpha_comparison.py`'s velocity figure): visually confirmed to
+          match thesis Figure 4b exactly - curve shapes, ordering, and endpoints
+          (u_m -> 1.0, 0.5, 0.25 for aR=0,1,2).
+        - **§5.6**: the source-active mean-height growth rate measured from the CSVs is
+          `0.200000`, matching thesis eq. (5.17) (`R - I = 0.1 - (-0.1) = 0.2`) to 6 decimal
+          places; the source-free case stays flat as expected. A third independent thesis
+          equation confirmed numerically (alongside §5.1 eq. 5.5 and §5.2 eqs. 5.9-5.10
+          above), on top of the qualitative figure-reproduction check for every section.
+      §5.3, §5.4, and §5.5's figures are generated and available for the user's own
+      figure-by-figure comparison against the stored thesis output; no closed form exists to
+      check them against automatically.
 - [ ] **Step 5 — topography + well-balancing**: `mesh.py` bed elevation field, augmented
       `(U,Z)` path in `spatialDiscretization.py`, wiring in `simulation.py`. Write the
       lake-at-rest regression test as part of this step, not after.

@@ -12,6 +12,7 @@
 
 # Python specific files
 __pycache__/
+.pytest_cache/
 
 # Python virtual environment
 .venv/
@@ -31,6 +32,7 @@ __pycache__/
 *.jpg
 *.jpeg
 data/
+results/
 
 # ...but the test golden fixtures ARE source, not generated output: they hold
 # reference values captured from the pre-refactor solver and the regression

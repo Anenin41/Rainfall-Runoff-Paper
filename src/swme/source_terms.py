@@ -29,25 +29,36 @@ from __future__ import annotations
 import numpy as np
 
 from . import coefficients
+from .wetdry import (
+    DEFAULT_THRESHOLDS,
+    WetDryThresholds,
+    desingularized_primitives,
+    safe_height,
+)
 
 
-def reconstruct_boundary_velocities(order: int, values: np.ndarray, eps_div: float = 1e-12):
+def reconstruct_boundary_velocities(
+    order: int,
+    values: np.ndarray,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
+):
     """Extract (h, u_m, alpha, u_s, u_b) from a conserved state U.
 
     u_s, u_b are the reconstructed free-surface / wet-boundary horizontal
     velocities (thesis eq. 3.34): u_s = u_m + sum_i alpha_i*phi_i(1),
     u_b = u_m + sum_i alpha_i*phi_i(0).
+
+    Primitives come from the shared wet-dry rule (`swme.wetdry`), so a
+    vanishing film reports u_s = u_b = u_m: the moment ramp has taken its
+    vertical structure away, which is exactly the plug-flow limit a film that
+    thin should have. For h >= h_wet this is unchanged from before Step 6.
     """
     values = np.asarray(values, dtype=np.float64)
-    h = values[0]
-    h_reg = h if h > eps_div else eps_div
-    um = values[1] / h_reg
+    h, um, alpha = desingularized_primitives(order, values, thresholds)
 
     if order == 0:
-        alpha = np.zeros(0, dtype=np.float64)
         return h, um, alpha, um, um
 
-    alpha = values[2:] / h_reg
     c = coefficients.get_coefficients(order)
     u_s = um + alpha @ c.phi1_m
     u_b = um + alpha @ c.phi0_m
@@ -59,7 +70,7 @@ def compute_navier_slip_friction(
     values: np.ndarray,
     viscosity: float,
     slip_length: float,
-    eps_div: float = 1e-12,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """P_slip(U): the classical Navier-slip bed-friction contribution to the
     generalized friction term (thesis eq. 3.32-3.33 with f_R=f_I=0):
@@ -74,25 +85,45 @@ def compute_navier_slip_friction(
     `SWME1D.compute_source_term` returns `-compute_navier_slip_friction(...)`.
     """
     values = np.asarray(values, dtype=np.float64)
-    h, um, alpha, u_s, u_b = reconstruct_boundary_velocities(order, values, eps_div)
     n = order + 2
     P = np.zeros(n, dtype=np.float64)
+
+    # A dry cell has no water to rub against the bed.
+    if values[0] <= thresholds.h_dry:
+        return P
+
+    h, um, alpha, u_s, u_b = reconstruct_boundary_velocities(
+        order, values, thresholds)
 
     slip_term = viscosity / slip_length
     P[1] = slip_term * u_b
 
     if order >= 1:
-        h_reg = h if h > eps_div else eps_div
+        # nu/h^2 is the sharpest 1/h in the whole model: it is what actually
+        # blows up first at a drying front. Floor at h_dry (not eps_div): at
+        # eps_div = 1e-14 this term would reach 1e28, which is finite and so
+        # passes every isfinite guard while being complete nonsense.
+        h_reg = safe_height(h, thresholds)
         c = coefficients.get_coefficients(order)
         mixing = (slip_term * u_b) * c.phi0_m
-        visc = (viscosity / h_reg**2) * (c.C_m @ values[2:])
+        # Below h_wet, feed this term the *ramped* moments (h*alpha) so the
+        # ramp reaches the one place the moments are most dangerous; at or
+        # above h_wet use the conserved values verbatim, since h*(a/h) is not
+        # bit-identical to a and this term would otherwise perturb every
+        # previously-validated run.
+        moments = (values[2:] if h >= thresholds.h_wet else h * alpha)
+        visc = (viscosity / h_reg**2) * (c.C_m @ moments)
         P[2:] = c.two_i_plus_1 * (mixing + visc)
 
     return P
 
 
 def compute_friction_operator_matrix(
-    order: int, h: float, viscosity: float, slip_length: float
+    order: int,
+    h: float,
+    viscosity: float,
+    slip_length: float,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """S(h): the linear operator such that d(w)/dt = S(h) @ w under pure
     Navier-slip friction, treating h as frozen at the given value (valid since
@@ -104,6 +135,13 @@ def compute_friction_operator_matrix(
     """
     n = order + 2
     S = np.zeros((n, n), dtype=np.float64)
+
+    # Dry cell: no friction operator at all, so (I - dt*S)^-1 = I and the
+    # implicit step leaves the (empty) cell alone.
+    if h <= thresholds.h_dry:
+        return S
+
+    h = safe_height(h, thresholds)
     slip_term = viscosity / (slip_length * h)
 
     if order == 0:

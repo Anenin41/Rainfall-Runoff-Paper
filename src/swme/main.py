@@ -14,6 +14,7 @@ from . import spatialDiscretization
 from . import timeIntegration
 from . import plotting
 from . import topography as topography_module
+from .wetdry import WetDryThresholds
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -113,6 +114,32 @@ def _build_topography(config) -> topography_module.TopographySettings:
     )
 
 
+def _build_wet_dry(config) -> WetDryThresholds:
+    """Build WetDryThresholds from the config's optional [wet_dry] section.
+
+    A config without that section gets the defaults (h_dry = 1e-4,
+    h_wet = 1e-3), which are sized for the thesis' h ~ O(1) cases and never
+    activate in a run that stays well above them - so every pre-Step-6 config
+    is unaffected. These are absolute depths, not ratios: scale them to the
+    depth scale of the problem.
+
+        [wet_dry]
+        h_dry   = 1e-4      # at/below: dry, no moments, velocity driven to 0
+        h_wet   = 1e-3      # at/above: ordinary wet flow, no regularization
+        eps_div = 1e-14     # machine-precision division guard
+    """
+    if not config.has_section('wet_dry'):
+        return WetDryThresholds()
+
+    section = config['wet_dry']
+    defaults = WetDryThresholds()
+    return WetDryThresholds(
+        eps_div = section.getfloat('eps_div', fallback=defaults.eps_div),
+        h_dry = section.getfloat('h_dry', fallback=defaults.h_dry),
+        h_wet = section.getfloat('h_wet', fallback=defaults.h_wet),
+    )
+
+
 def _resolve_config(name_or_path) -> Path:
     """Resolve a --config value to a readable file.
 
@@ -198,20 +225,26 @@ def main(argv=None):
     # the pre-Step-5 behavior for every config without a [topography] section.
     _topography = _build_topography(config)
 
+    # Wet-dry thresholds; defaults never activate above h ~ 1e-3, so configs
+    # written before Step 6 behave exactly as they did.
+    _wet_dry = _build_wet_dry(config)
+
     if pde_information['pde_type'] == 'SWME1D':
         _pde = pde.SWME1D(pde_information['initialCondition'],
                         pde_information.getfloat('viscosity'),
                         pde_information.getfloat('slipLength'),
                         False,
                         linear_source_implicit,
-                        topography = _topography)
+                        topography = _topography,
+                        wet_dry = _wet_dry)
     elif pde_information['pde_type'] == 'HSWME1D':
         _pde = pde.SWME1D(pde_information['initialCondition'],
                         pde_information.getfloat('viscosity'),
                         pde_information.getfloat('slipLength'),
                         True,
                         linear_source_implicit,
-                        topography = _topography)
+                        topography = _topography,
+                        wet_dry = _wet_dry)
 
     elif pde_information['pde_type'] == 'RechargeSWME1D':
         if not HAS_RECHARGE:
@@ -278,6 +311,7 @@ def main(argv=None):
             infiltration_model,
             mixing_friction_model,
             topography = _topography,
+            wet_dry = _wet_dry,
             )
     else:
         print('PDE_type is not implemented yet')

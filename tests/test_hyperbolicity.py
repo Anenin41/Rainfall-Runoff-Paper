@@ -334,7 +334,7 @@ class TestEndToEndDetection:
 
     def test_a_non_hyperbolic_swme_run_reports_itself(self):
         sim, scheme = _run(hyperbolic=False)
-        with pytest.warns(RuntimeWarning, match="Loss of hyperbolicity"):
+        with pytest.warns(RuntimeWarning, match="Complex spectra at"):
             sim.run_simulation(0.05)
         assert scheme.nonhyperbolic_count > 0
         assert scheme.max_abs_imaginary_eigenvalue > 1e-6
@@ -348,7 +348,7 @@ class TestEndToEndDetection:
             warnings.simplefilter("always")
             sim.run_simulation(0.05)
         assert not [w for w in caught
-                    if "Loss of hyperbolicity" in str(w.message)]
+                    if "Complex spectra" in str(w.message)]
         assert scheme.nonhyperbolic_count == 0
         assert scheme.spectra_examined > 0
         assert scheme.max_abs_imaginary_eigenvalue <= TOL
@@ -367,6 +367,6 @@ class TestEndToEndDetection:
             warnings.simplefilter("always")
             sim.run_simulation(0.2)
         assert not [w for w in caught
-                    if "Loss of hyperbolicity" in str(w.message)]
+                    if "Complex spectra" in str(w.message)]
         assert scheme.spectra_examined > 0
         assert scheme.nonhyperbolic_count == 0

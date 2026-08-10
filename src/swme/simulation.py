@@ -7,6 +7,18 @@ from . import mesh
 from . import spatialDiscretization
 from . import timeIntegration
 
+# How many times the positivity limiter may re-derive the timestep for schemes
+# whose viscosity depends on it (LF, PRICE). Shrinking delta_t raises their
+# viscosity, so the fixed point is not guaranteed to be reached in one pass;
+# a small bound plus the clamp below is more robust than iterating to
+# convergence. Roe and Osher need zero iterations.
+_MAX_POSITIVITY_ITERATIONS = 3
+
+# Depth below zero that counts as round-off rather than a real failure of the
+# positivity limiter. Scaled to double precision on O(1) depths.
+_NEGATIVE_HEIGHT_TOLERANCE = 1e-12
+
+
 class Simulation(ABC):
 
     """
@@ -289,9 +301,16 @@ class ClassicalSimulation1D(Simulation):
             local_values = values[i, :].copy()
             x_i = float(self.mesh.cell_center_positions[i - 1])
 
-            # Skip dry states before trying to build the transport matrix
+            # Skip dry states before trying to build the transport matrix.
+            # The threshold is the model's *physical* dry threshold, not the
+            # eigenvalue tolerance that happened to be reused here before
+            # Step 6 - a cell below h_dry has had its moments ramped away, so
+            # its spectrum says nothing about the flow.
+            dry_threshold = getattr(
+                getattr(self.pde_type, 'wet_dry', None), 'h_dry',
+                self.hyperbolicity_tol)
             if ((not np.all(np.isfinite(local_values))) or
-                local_values[0] <= self.hyperbolicity_tol):
+                local_values[0] <= dry_threshold):
                 eigvals = np.full(self.number_of_variables, np.nan)
                 real_parts = np.full(self.number_of_variables, np.nan)
                 imag_parts = np.full(self.number_of_variables, np.nan)
@@ -395,6 +414,14 @@ class ClassicalSimulation1D(Simulation):
         # previous run's hyperbolicity loss into this one's report.
         if hasattr(self.spatial_discretization, 'reset_hyperbolicity_diagnostics'):
             self.spatial_discretization.reset_hyperbolicity_diagnostics()
+
+        # Wet-dry bookkeeping (RESTRUCTURE_PLAN.md Step 6). `mass_created_by_
+        # clamping` accumulates the water conjured by clamping round-off
+        # negative depths back to zero. It should stay negligible; reporting it
+        # is what turns "we clamp and hope" into a checkable claim.
+        thresholds = getattr(self.pde_type, 'wet_dry', None)
+        dry_threshold = getattr(thresholds, 'h_dry', 0.0)
+        self.mass_created_by_clamping = 0.0
         
         # Initialize history storage if enabled.
         # The initial condition is stored as snapshot 0 so that exported histories
@@ -478,35 +505,97 @@ class ClassicalSimulation1D(Simulation):
             max_speed = self.pde_type.compute_max_wavespeed(self.order,
                                                             values)
 
-            delta_t = CFL*delta_x/max_speed 
+            delta_t = CFL*delta_x/max_speed
 
-            if use_topography:
-                n_var = self.number_of_variables
-                for i in range(self.mesh.resolution+1):
-                    augmented_left[:n_var] = values[i,:]
-                    augmented_left[n_var] = bed_elevation[i]
-                    augmented_right[:n_var] = values[i+1,:]
-                    augmented_right[n_var] = bed_elevation[i+1]
+            def compute_all_fluctuations(step_size):
+                if use_topography:
+                    n_var = self.number_of_variables
+                    for i in range(self.mesh.resolution+1):
+                        augmented_left[:n_var] = values[i,:]
+                        augmented_left[n_var] = bed_elevation[i]
+                        augmented_right[:n_var] = values[i+1,:]
+                        augmented_right[n_var] = bed_elevation[i+1]
 
-                    fluctuation_min, fluctuation_plus = self.spatial_discretization.compute_fluctuation(
-                        augmented_left,
-                        augmented_right,
-                        augmented_system_matrix,
-                        delta_t,
-                        delta_x)
+                        fluctuation_min, fluctuation_plus = self.spatial_discretization.compute_fluctuation(
+                            augmented_left,
+                            augmented_right,
+                            augmented_system_matrix,
+                            step_size,
+                            delta_x)
 
-                    # Drop the Z row: it is zero by construction, and the
-                    # state array has no Z column to write it into.
-                    fluctuations_min[i,:] = fluctuation_min[:n_var]
-                    fluctuations_plus[i,:] = fluctuation_plus[:n_var]
-            else:
-                for i in range(self.mesh.resolution+1):
-                    fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
-                        values[i,:],
-                        values[i+1,:],
-                        system_matrix,
-                        delta_t,
-                        delta_x)
+                        # Drop the Z row: it is zero by construction, and the
+                        # state array has no Z column to write it into.
+                        fluctuations_min[i,:] = fluctuation_min[:n_var]
+                        fluctuations_plus[i,:] = fluctuation_plus[:n_var]
+                else:
+                    for i in range(self.mesh.resolution+1):
+                        fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
+                            values[i,:],
+                            values[i+1,:],
+                            system_matrix,
+                            step_size,
+                            delta_x)
+
+            compute_all_fluctuations(delta_t)
+
+            # Positivity-preserving timestep limiter (RESTRUCTURE_PLAN.md
+            # §2.3(c)). The mass update of cell i is
+            #     h_i^{n+1} = h_i - dt/dx * (F+_{i-1,0} + F-_{i,0}),
+            # so wherever that net outflow is positive it must not exceed the
+            # water the cell actually holds. Capping dt pre-emptively is what
+            # replaces the old crash-after-the-fact on non-positive height.
+            #
+            # For a wet, CFL-limited flow the cap is far looser than the CFL
+            # condition and never binds, so this changes nothing about runs
+            # that stay wet - the reason existing results are unaffected.
+            # Cells already at or below h_dry are excluded. They hold no water
+            # to protect, and a wet-dry interface can hand a dry cell a tiny
+            # spurious positive outflow - for which the only admissible
+            # timestep is exactly zero, which would deadlock the run over a
+            # quantity smaller than h_dry. Their round-off excursions are
+            # caught by the clamp after the update instead, and the mass that
+            # creates is tracked and reported below.
+            heights = values[1:self.mesh.resolution+1, 0]
+            net_outflow = (fluctuations_plus[:self.mesh.resolution, 0]
+                           + fluctuations_min[1:self.mesh.resolution+1, 0])
+            draining = (net_outflow > 0.0) & (heights > dry_threshold)
+            if np.any(draining):
+                available = heights[draining]
+                admissible = np.min(available * delta_x / net_outflow[draining])
+                if admissible < delta_t:
+                    delta_t = max(admissible, 0.0)
+                    # Roe and Osher build their viscosity from |A| alone, so
+                    # their fluctuations do not depend on delta_t and are still
+                    # valid. LF and PRICE do depend on it, and shrinking dt
+                    # *raises* their viscosity, so re-limit a bounded number of
+                    # times rather than assuming one pass converges.
+                    if getattr(self.spatial_discretization,
+                               'viscosity_depends_on_timestep', True):
+                        for _ in range(_MAX_POSITIVITY_ITERATIONS):
+                            if delta_t <= 0.0:
+                                break
+                            compute_all_fluctuations(delta_t)
+                            net_outflow = (
+                                fluctuations_plus[:self.mesh.resolution, 0]
+                                + fluctuations_min[1:self.mesh.resolution+1, 0])
+                            draining = ((net_outflow > 0.0)
+                                        & (heights > dry_threshold))
+                            if not np.any(draining):
+                                break
+                            available = heights[draining]
+                            admissible = np.min(
+                                available * delta_x / net_outflow[draining])
+                            if admissible >= delta_t:
+                                break
+                            delta_t = max(admissible, 0.0)
+                    if delta_t <= 0.0:
+                        raise RuntimeError(
+                            "Positivity limiter drove the timestep to zero at "
+                            f"step={step}, time={t}. The state is draining "
+                            "faster than any positive timestep can follow; "
+                            "check the wet-dry thresholds against the depth "
+                            "scale of this problem."
+                        )
 
             for i in range(1,self.mesh.resolution+1):
                 values[i,:] = values[i,:] - delta_t/delta_x*(fluctuations_plus[i-1,:]+fluctuations_min[i,:])
@@ -537,12 +626,41 @@ class ClassicalSimulation1D(Simulation):
                         f"at step={step}, time={t}, cell={i-1}, x={self.mesh.cell_center_positions[i-1]},  "
                         f"values={values[i, :]}"
                     )
-                if values[i, 0] <= 0.0:
+                # h == 0 is a legitimate dry cell since Step 6, so this is no
+                # longer a crash-on-sight. It is kept as the assertion that
+                # the positivity limiter above did its job: a *negative* height
+                # is still impossible, and reaching one means the limiter has a
+                # bug rather than the problem being hard.
+                if values[i, 0] < -_NEGATIVE_HEIGHT_TOLERANCE:
+                    hint = ""
+                    if getattr(self.pde_type, 'viscosity', 0.0) and not \
+                            getattr(self.pde_type, 'linear_source', False):
+                        hint = (
+                            " NOTE: this run has nonzero viscosity and an "
+                            "explicit source term. The Navier-slip friction "
+                            "carries a nu/h^2 factor, so it becomes stiff near "
+                            "a drying front and explicit integration of it "
+                            "goes unstable - which shows up here, as a blown-up "
+                            "moment dragging the height negative, rather than "
+                            "as a failure of the positivity limiter. Use the "
+                            "implicit source path (linear_source = True with "
+                            "timeIntegrator = ImplicitEuler), which is exactly "
+                            "what it is for."
+                        )
                     raise RuntimeError(
-                        f"Non-positive height produced after update  "
+                        f"Negative height produced after update  "
                         f"at step={step}, time={t}, cell={i-1}, x={self.mesh.cell_center_positions[i-1]},  "
-                        f"h={values[i, 0]}, values={values[i, :]}"
+                        f"h={values[i, 0]}, values={values[i, :]}. The "
+                        f"positivity-preserving timestep limiter guarantees "
+                        f"this cannot come from the flux update.{hint}"
                     )
+                if values[i, 0] < 0.0:
+                    # Round-off below the tolerance: clamp so the state stays
+                    # physically meaningful rather than carrying a tiny
+                    # negative depth into the next step's divisions. Water is
+                    # created here, so keep a running total of how much.
+                    self.mass_created_by_clamping -= values[i, 0] * delta_x
+                    values[i, 0] = 0.0
             print()
             print('time: '+str(t))
             print('step size: '+str(delta_t))
@@ -563,18 +681,50 @@ class ClassicalSimulation1D(Simulation):
         # SWME is only unconditionally hyperbolic for N <= 1; from N = 2 up it
         # can lose hyperbolicity at large moments, which is what HSWME
         # (`hyperbolic=True`) is for. See tests/test_hyperbolicity.py.
+        # Wet-dry mass audit. The positivity limiter guarantees h >= 0 for
+        # every cell holding real water; cells already below h_dry are exempt
+        # from it and can pick up round-off negatives that get clamped, which
+        # creates water. Say so if it ever amounts to anything, rather than
+        # leaving a silent conservation error.
+        total_mass = float(np.sum(values[1:self.mesh.resolution+1, 0]) * delta_x)
+        if (self.mass_created_by_clamping > 0.0 and total_mass > 0.0
+                and self.mass_created_by_clamping > 1e-8 * total_mass):
+            warnings.warn(
+                f"Wet-dry clamping created "
+                f"{self.mass_created_by_clamping:.3e} of mass "
+                f"({self.mass_created_by_clamping / total_mass:.2e} of the "
+                "total) by resetting round-off-negative depths to zero. This "
+                "should be negligible; a large value means h_dry is too "
+                "coarse for this problem's depth scale.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        # Be precise about what this measures: the *path-averaged* interface
+        # matrix, not A(U) at any single state. Those are different questions,
+        # and the averaged one leaves the real axis at a strong enough jump
+        # even for models that are unconditionally hyperbolic pointwise - a
+        # wet-dry front does it at N=0, i.e. for plain shallow water. The
+        # wording below says so rather than blaming the model, because the
+        # previous phrasing ("the N=... SWME system is not globally
+        # hyperbolic") would have been flatly false in exactly the case Step 6
+        # makes reachable.
         nonhyperbolic = getattr(self.spatial_discretization,
                                 'nonhyperbolic_count', 0)
         if nonhyperbolic:
             examined = self.spatial_discretization.spectra_examined
             warnings.warn(
-                f"Loss of hyperbolicity: {nonhyperbolic} of {examined} "
-                f"interface spectra had complex eigenvalues (largest "
-                f"|Im(lambda)| = "
+                f"Complex spectra at {nonhyperbolic} of {examined} interfaces "
+                f"(largest |Im(lambda)| = "
                 f"{self.spatial_discretization.max_abs_imaginary_eigenvalue:.3e}"
-                f"). The N={self.order} SWME system is not globally hyperbolic; "
-                "results past this point are not trustworthy. Re-run with the "
-                "hyperbolic (HSWME) variant of the model.",
+                "). This is the path-averaged interface matrix, which can "
+                "leave the real axis at a strong jump - a wet-dry front does "
+                "so even for plain shallow water - and is therefore not on "
+                "its own evidence that the model lost hyperbolicity. To check "
+                f"the model itself (the N={self.order} SWME system is only "
+                "unconditionally hyperbolic for N <= 1; HSWME always is), set "
+                "store_hyperbolicity = True for the cell-by-cell spectrum of "
+                "A(U).",
                 RuntimeWarning,
                 stacklevel=2,
             )

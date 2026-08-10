@@ -292,12 +292,18 @@ class TestAugmentedSystemMatrix:
     @pytest.mark.parametrize("bad,match", [
         (np.array([1.0, 0.0, 0.0]), "length 4"),          # too short for N=1
         (np.array([1.0, 0.0, np.nan, 0.0]), "Non-finite"),
-        (np.array([0.0, 0.0, 0.0, 0.0]), "Non-positive height"),
-        (np.array([-1.0, 0.0, 0.0, 0.0]), "Non-positive height"),
+        (np.array([-1.0, 0.0, 0.0, 0.0]), "Negative height"),
     ])
     def test_input_validation(self, bad, match):
         with pytest.raises(ValueError, match=match):
             make_pde().compute_augmented_system_matrix(1, bad)
+
+    def test_a_dry_cell_is_accepted_not_rejected(self):
+        """h == 0 stopped being an error in Step 6 (wet-dry): a dry cell over
+        topography is an ordinary state, and must produce a finite matrix."""
+        augmented = make_pde().compute_augmented_system_matrix(
+            1, np.array([0.0, 0.0, 0.0, 0.7]))
+        assert np.isfinite(augmented).all()
 
 
 # ---------------------------------------------------------------------------

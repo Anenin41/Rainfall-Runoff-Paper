@@ -4,6 +4,7 @@ import numpy as np
 # Local imports
 from swme.pde import SWME1D
 from swme.topography import TopographySettings
+from swme.wetdry import WetDryThresholds
 from .context import SourceContext
 from .source_terms import compute_recharge_mass_source, compute_total_friction
 
@@ -35,6 +36,7 @@ class RechargeSWME1D(SWME1D):
             mixing_friction_model : object,
             eps_dry : float = 1e-14,
             topography : TopographySettings | None = None,
+            wet_dry : WetDryThresholds | None = None,
     ):
         # Inherit from the parent class stuff which are the same
         super().__init__(
@@ -44,6 +46,7 @@ class RechargeSWME1D(SWME1D):
             hyperbolic = hyperbolic,
             linear_source = linear_source,
             topography = topography,
+            wet_dry = wet_dry,
         )
 
         # Initialize recharge specific attributes
@@ -52,10 +55,11 @@ class RechargeSWME1D(SWME1D):
         self.source_context = SourceContext()
         self.mixing_friction_model = mixing_friction_model
 
-        # Division-guard / dry-cell tolerance. This is the machine-precision
-        # guard inherited from the legacy source terms, NOT a physically
-        # meaningful dry threshold - the latter (h_dry / h_wet, with a proper
-        # wetting-front treatment) arrives in RESTRUCTURE_PLAN.md Step 6.
+        # Legacy machine-precision division guard, kept only so existing
+        # callers that pass it keep working. The physically meaningful dry
+        # thresholds now live on `self.wet_dry` (a WetDryThresholds, set by
+        # SWME1D.__init__) and are what the source terms actually use -
+        # RESTRUCTURE_PLAN.md Step 6.
         self.eps_dry = eps_dry
 
     # Manually set the context for the source terms
@@ -102,9 +106,14 @@ class RechargeSWME1D(SWME1D):
         values = np.asarray(values, dtype = np.float64)
         h = values[0]
 
-        # Dry-cell treatment: no exchange, no friction, no mixing
-        if h <= self.eps_dry:
-            return np.zeros(order + 2, dtype = np.float64)
+        # NOTE: there is deliberately no dry-cell short circuit here any more.
+        # Until Step 6 this method returned an all-zero source for h <= eps_dry,
+        # which silently made it impossible for rain to ever wet dry ground -
+        # the one thing a rainfall-runoff model must be able to do. The mass
+        # row S[0] = R - I needs no primitives, and every other row vanishes on
+        # its own once the wet-dry rule zeroes the velocities and moments, so
+        # evaluating the full expression is both correct and simpler. See
+        # `recharge.source_terms.compute_recharge_mass_source`.
 
         # Evaluate the local rainfall and bed-exchange rates
         R = self.get_rainfall_rate(self.source_context)
@@ -125,7 +134,7 @@ class RechargeSWME1D(SWME1D):
 
         # S_{R, I}(U) - P(U)
         return compute_recharge_mass_source(
-            order, values, R = R, I = I, eps_div = self.eps_dry,
+            order, values, R = R, I = I, thresholds = self.wet_dry,
         ) - compute_total_friction(
             order,
             values,
@@ -133,5 +142,5 @@ class RechargeSWME1D(SWME1D):
             f_I = f_I,
             viscosity = self.viscosity,
             slip_length = self.slip_length,
-            eps_div = self.eps_dry,
+            thresholds = self.wet_dry,
         )

@@ -19,10 +19,15 @@ import numpy as np
 
 from swme import coefficients
 from swme.source_terms import reconstruct_boundary_velocities, compute_navier_slip_friction
+from swme.wetdry import DEFAULT_THRESHOLDS, WetDryThresholds
 
 
 def compute_recharge_mass_source(
-    order: int, values: np.ndarray, R: float, I: float, eps_div: float = 1e-14
+    order: int,
+    values: np.ndarray,
+    R: float,
+    I: float,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """S_{R,I}(U): direct rainfall/infiltration mass and momentum production
     (thesis eq. 3.30), arbitrary N. R = I = 0 reproduces a zero source.
@@ -31,13 +36,21 @@ def compute_recharge_mass_source(
         S[1] = R*u_s - I*u_b
         S[i+2] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
                  + (2i+1)*I*(-phi_i(0)*u_b + u_m*s_i + sum_j F[i,j]*alpha_j)
+
+    Deliberately has NO dry-cell short circuit, unlike the mixing friction
+    below. Rain falling on dry ground has to wet it - that is the entire point
+    of a rainfall-runoff model - and S[0] = R - I is pure mass exchange that
+    needs no primitives at all. The remaining components take care of
+    themselves: a dry cell reports u_s = u_b = u_m = 0 and alpha = 0 through
+    the wet-dry rule, so the momentum and moment rows vanish on their own,
+    which is the physically right answer (rain arrives with no horizontal
+    momentum). Infiltration out of a dry cell is bounded by the closures
+    themselves, which cap I at the available h/dt.
     """
     values = np.asarray(values, dtype=np.float64)
-    h = values[0]
-    if h <= eps_div:
-        return np.zeros(order + 2, dtype=np.float64)
 
-    _, um, alpha, u_s, u_b = reconstruct_boundary_velocities(order, values, eps_div)
+    _, um, alpha, u_s, u_b = reconstruct_boundary_velocities(
+        order, values, thresholds)
     n = order + 2
     S = np.zeros(n, dtype=np.float64)
 
@@ -54,7 +67,11 @@ def compute_recharge_mass_source(
 
 
 def compute_mixing_friction(
-    order: int, values: np.ndarray, f_R: float, f_I: float, eps_div: float = 1e-14
+    order: int,
+    values: np.ndarray,
+    f_R: float,
+    f_I: float,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """P_mix(U): rainfall/infiltration-induced mixing friction only (thesis
     eq. 3.33, excluding the Navier-slip term - see module docstring),
@@ -65,13 +82,18 @@ def compute_mixing_friction(
         P_mix[i+2] = (2i+1)*(f_R*phi_i(1)*u_s + f_I*phi_i(0)*u_b),   i = 1..N
     """
     values = np.asarray(values, dtype=np.float64)
-    h = values[0]
-    if h <= eps_div:
-        return np.zeros(order + 2, dtype=np.float64)
-
-    _, um, alpha, u_s, u_b = reconstruct_boundary_velocities(order, values, eps_div)
     n = order + 2
     P = np.zeros(n, dtype=np.float64)
+
+    # Friction on a dry cell is friction on nothing. (Unlike the mass source
+    # above, this really does vanish - it is proportional to the boundary
+    # velocities, which the wet-dry rule already sends to zero, so the early
+    # return is an optimization rather than a physical decision.)
+    if values[0] <= thresholds.h_dry:
+        return P
+
+    _, um, alpha, u_s, u_b = reconstruct_boundary_velocities(
+        order, values, thresholds)
 
     P[1] = f_R * u_s + f_I * u_b
 
@@ -91,7 +113,7 @@ def compute_total_friction(
     f_I: float,
     viscosity: float,
     slip_length: float,
-    eps_div: float = 1e-14,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """P(U) = P_slip(U) + P_mix(U), the full generalized friction block used
     by RechargeSWME1D (direct generic analog of the old
@@ -99,5 +121,5 @@ def compute_total_friction(
     quantity). The solver uses S_total(U) = S_{R,I}(U) - P(U).
     """
     return compute_navier_slip_friction(
-        order, values, viscosity, slip_length, eps_div
-    ) + compute_mixing_friction(order, values, f_R, f_I, eps_div)
+        order, values, viscosity, slip_length, thresholds
+    ) + compute_mixing_friction(order, values, f_R, f_I, thresholds)

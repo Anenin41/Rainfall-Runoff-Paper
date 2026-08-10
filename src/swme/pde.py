@@ -4,6 +4,12 @@ import numpy as np
 from . import coefficients
 from . import source_terms
 from .topography import TopographySettings
+from .wetdry import (
+    DEFAULT_THRESHOLDS,
+    WetDryThresholds,
+    desingularized_primitives,
+    desingularized_primitives_array,
+)
 
 
 def _compute_system_matrix_generic(
@@ -11,7 +17,7 @@ def _compute_system_matrix_generic(
     values: np.ndarray,
     g: float = 1,
     hyperbolic: bool = False,
-    eps_div: float = 1e-12,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """Generic-N system matrix A(U). Backs `SWME1D.compute_system_matrix`,
     which validates its input and then delegates here.
@@ -40,9 +46,11 @@ def _compute_system_matrix_generic(
     n = order + 2
     Amat = np.zeros((n, n), dtype=np.float64)
 
-    h = values[0]
-    h_reg = h if h > eps_div else eps_div
-    um = values[1] / h_reg
+    # Primitives come from the shared wet-dry rule, so the transport matrix,
+    # the wave speeds and the source terms all agree about what a nearly-dry
+    # cell means (RESTRUCTURE_PLAN.md Step 6). For h >= h_wet this is exactly
+    # values[1]/h and values[2:]/h, i.e. unchanged from before wet-dry.
+    h, um, alpha = desingularized_primitives(order, values, thresholds)
 
     if order == 0:
         Amat[0, 1] = 1.0
@@ -50,9 +58,8 @@ def _compute_system_matrix_generic(
         Amat[1, 1] = 2.0 * um
         return Amat
 
-    # values[2:] / h_reg already allocates a fresh float64 array, so the
-    # hyperbolic branch can zero in place without a defensive copy.
-    alpha = values[2:] / h_reg
+    # `alpha` is always a freshly allocated array, so the hyperbolic branch
+    # can zero in place without a defensive copy.
     if hyperbolic and order > 1:
         alpha[1:] = 0.0  # zero alpha_2..alpha_N, keep alpha_1
 
@@ -81,7 +88,7 @@ def _compute_augmented_system_matrix_generic(
     augmented_values: np.ndarray,
     g: float = 1,
     hyperbolic: bool = False,
-    eps_div: float = 1e-12,
+    thresholds: WetDryThresholds = DEFAULT_THRESHOLDS,
 ) -> np.ndarray:
     """Augmented-state system matrix A~(W) for W = (U, Z), generic in N.
 
@@ -137,8 +144,8 @@ def _compute_augmented_system_matrix_generic(
         gravitational constant
     hyperbolic : bool
         HSWME regularization flag, forwarded to the base matrix
-    eps_div : float
-        division guard on h, forwarded to the base matrix
+    thresholds : WetDryThresholds
+        wet-dry thresholds, forwarded to the base matrix
 
     Returns
     -------
@@ -153,7 +160,7 @@ def _compute_augmented_system_matrix_generic(
         augmented_values[:n],
         g=g,
         hyperbolic=hyperbolic,
-        eps_div=eps_div,
+        thresholds=thresholds,
     )
     A_tilde[1, n] = g * augmented_values[0]
     return A_tilde
@@ -408,7 +415,8 @@ class SWME1D(PDE):
                 slip_length: float,
                 hyperbolic: bool,
                 linear_source: bool,
-                topography: TopographySettings | None = None):
+                topography: TopographySettings | None = None,
+                wet_dry: WetDryThresholds | None = None):
         """
         Constructs all the necessary attributes for the SWME1D object.
 
@@ -433,6 +441,11 @@ class SWME1D(PDE):
             bed's effect on the *dynamics* does not come through here - it
             comes through `compute_augmented_system_matrix` and the sampled
             elevation stored on the mesh.
+        wet_dry : WetDryThresholds, optional
+            thresholds governing how nearly-dry cells are handled - see
+            `swme.wetdry`. Defaults to h_dry = 1e-4, h_wet = 1e-3, sized for
+            the thesis' h ~ O(1) test cases; scale them to the problem. Runs
+            that stay above h_wet everywhere are unaffected by this entirely.
         """
         self.initial_condition = initial_condition
         self.viscosity = viscosity
@@ -441,6 +454,7 @@ class SWME1D(PDE):
         self.linear_source = linear_source
         self.exact_source_computation = False
         self.topography = topography if topography is not None else TopographySettings()
+        self.wet_dry = wet_dry if wet_dry is not None else DEFAULT_THRESHOLDS
 
     def compute_system_matrix(self,
                               order: int,
@@ -482,9 +496,14 @@ class SWME1D(PDE):
             raise ValueError(
                 f"Non-finite state encountered in compute_system_matrix: {values}"
             )
-        if values[0] <= 0.0:
+        # h == 0 is a legitimate state since wet-dry landed (Step 6): a dry
+        # cell is dry, not an error. Only a *negative* height is impossible -
+        # the positivity-preserving timestep limiter in
+        # ClassicalSimulation1D.run_simulation exists to guarantee it cannot
+        # happen, so this stays as the assertion that it worked.
+        if values[0] < 0.0:
             raise ValueError(
-                f"Non-positive height h={values[0]} in compute_system_matrix, "
+                f"Negative height h={values[0]} in compute_system_matrix, "
                 f"values={values}"
             )
 
@@ -493,6 +512,7 @@ class SWME1D(PDE):
             values,
             g = g,
             hyperbolic = self.hyperbolic,
+            thresholds = self.wet_dry,
         )
 
     def compute_augmented_system_matrix(self,
@@ -539,9 +559,10 @@ class SWME1D(PDE):
                 "Non-finite state encountered in "
                 f"compute_augmented_system_matrix: {augmented_values}"
             )
-        if augmented_values[0] <= 0.0:
+        # See compute_system_matrix: dry (h == 0) is allowed, negative is not.
+        if augmented_values[0] < 0.0:
             raise ValueError(
-                f"Non-positive height h={augmented_values[0]} in "
+                f"Negative height h={augmented_values[0]} in "
                 f"compute_augmented_system_matrix, values={augmented_values}"
             )
 
@@ -550,6 +571,7 @@ class SWME1D(PDE):
             augmented_values,
             g = g,
             hyperbolic = self.hyperbolic,
+            thresholds = self.wet_dry,
         )
 
     def compute_source_term(self,
@@ -920,6 +942,18 @@ class SWME1D(PDE):
                     initial_values[6] = 0 
                 if order > 5:
                     initial_values[7] = 0
+        elif initial_condition == 'damBreak_dryBed':
+            # The canonical wet-dry benchmark (RESTRUCTURE_PLAN.md Step 6):
+            # a column of water at rest released onto a completely dry bed.
+            # The dry side is *exactly* zero, not a thin film - the point is
+            # that the scheme handles a genuine vacuum front, and a small
+            # positive floor would quietly turn this into an easier problem.
+            initial_values[0] = 1.0 if position < 0.0 else 0.0
+        elif initial_condition == 'damBreak_dryBed_partial':
+            # Partial dam break: a shallow but nonzero downstream layer, so
+            # the front is a wetting front rather than a vacuum front. Both
+            # are worth testing; this one has an exact Stoker solution.
+            initial_values[0] = 1.0 if position < 0.0 else 0.1
         elif initial_condition in ('lakeAtRest', 'perturbedLakeAtRest'):
             # Topography-aware initial conditions (RESTRUCTURE_PLAN.md Step 5).
             # Unlike every other case above, these are not a function of
@@ -979,13 +1013,49 @@ class SWME1D(PDE):
                            values: np.ndarray,
                            g=1) -> float:
 
-        wave_speed_sqrt = values[:,0]*int(g)
+        values = np.asarray(values, dtype = np.float64)
+
+        if np.all(values[:,0] >= self.wet_dry.h_wet):
+            # Fully-wet fast path, kept as the literal pre-wet-dry expression.
+            # Not merely an optimization: `(a*a)/(h*h)` and `(a/h)**2` agree
+            # mathematically but not to the last bit, and the wave speed sets
+            # delta_t, so any difference here would perturb every subsequent
+            # step. Keeping this branch verbatim is what lets runs that never
+            # approach drying reproduce earlier results exactly.
+            wave_speed_sqrt = values[:,0]*int(g)
+            for i in range(order):
+                wave_speed_sqrt += np.divide(values[:,i+2]*values[:,i+2],values[:,0]*values[:,0])
+            max_wave_speed_plus = np.max(np.abs(np.divide(values[:,1],values[:,0])+np.sqrt(wave_speed_sqrt)))
+            max_wave_speed_min = np.max(np.abs(np.divide(values[:,1],values[:,0])-np.sqrt(wave_speed_sqrt)))
+            return max(max_wave_speed_plus,max_wave_speed_min)
+
+        # Something on the grid is at or below h_wet: go through the shared
+        # wet-dry rule, so a dry cell contributes a wave speed of 0 rather
+        # than inf/NaN and cannot collapse the timestep.
+        h, um, alpha = desingularized_primitives_array(order, values, self.wet_dry)
+
+        wave_speed_sqrt = h*int(g)
         for i in range(order):
-            wave_speed_sqrt += np.divide(values[:,i+2]*values[:,i+2],values[:,0]*values[:,0])
-        max_wave_speed_plus = np.max(np.abs(np.divide(values[:,1],values[:,0])+np.sqrt(wave_speed_sqrt)))
-        max_wave_speed_min = np.max(np.abs(np.divide(values[:,1],values[:,0])-np.sqrt(wave_speed_sqrt)))
+            wave_speed_sqrt = wave_speed_sqrt + alpha[:,i]*alpha[:,i]
+        wave_speed_sqrt = np.maximum(wave_speed_sqrt, 0.0)
+
+        max_wave_speed_plus = np.max(np.abs(um+np.sqrt(wave_speed_sqrt)))
+        max_wave_speed_min = np.max(np.abs(um-np.sqrt(wave_speed_sqrt)))
         max_wavespeed = max(max_wave_speed_plus,max_wave_speed_min)
 
+        # An entirely dry grid has no waves at all, so the CFL condition
+        # genuinely imposes no constraint - but the caller divides by this to
+        # get delta_t, so it must be finite and positive. Fall back to the
+        # wave speed of the shallowest depth still considered wet.
+        #
+        # Be aware of what this means: on a completely dry domain the timestep
+        # is no longer controlled by anything physical, and any source term
+        # (rainfall, most obviously) is then integrated over a step chosen by
+        # this fallback rather than by accuracy. Start such a case from a thin
+        # film, or set t_end/resolution so the fallback step is small enough
+        # for the source. CFL-based stepping cannot solve this on its own.
+        if not np.isfinite(max_wavespeed) or max_wavespeed <= 0.0:
+            return float(np.sqrt(self.wet_dry.h_wet * int(g)))
         return max_wavespeed
 
     def compute_vertical_velocity_profile(self,
@@ -1061,5 +1131,13 @@ class SWME1D(PDE):
                 data_matrix_convective[valid, j + 2] / h[valid]
             )
 
-        return data_matrix_primitive 
+        # A dry cell (h == 0) is a legitimate state since Step 6, not missing
+        # data, so report its primitives as zero rather than NaN - otherwise
+        # every downstream mean/min/max in the CSV summaries would be poisoned
+        # by the dry part of the domain. NaN is still reserved for genuinely
+        # invalid states (non-finite or negative h), which should not occur.
+        dry = np.isfinite(h) & (h >= 0.0) & ~valid
+        data_matrix_primitive[dry, 1:] = 0.0
+
+        return data_matrix_primitive
     

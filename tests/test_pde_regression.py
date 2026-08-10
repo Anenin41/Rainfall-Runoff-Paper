@@ -109,14 +109,23 @@ def test_system_matrix_order_reduction_consistency(order, hyperbolic):
 
 def test_system_matrix_validation_still_rejects_bad_input():
     """Input validation that the legacy compute_system_matrix performed must
-    survive the Step 3 rewrite."""
+    survive the Step 3 rewrite.
+
+    One clause was deliberately relaxed in Step 6: h == 0 used to be rejected
+    as "non-positive height", but a dry cell is now a legitimate state, so only
+    a *negative* height is an error. See tests/test_wetdry.py.
+    """
     pde = SWME1D("unused", 1e-3, 1.0, False, False)
     with pytest.raises(ValueError):
         pde.compute_system_matrix(1, np.array([[1.0, 0.0, 0.0]]))  # not 1D
     with pytest.raises(ValueError):
         pde.compute_system_matrix(1, np.array([1.0, np.nan, 0.0]))  # non-finite
     with pytest.raises(ValueError):
-        pde.compute_system_matrix(1, np.array([0.0, 0.0, 0.0]))  # h <= 0
+        pde.compute_system_matrix(1, np.array([-1.0, 0.0, 0.0]))  # h < 0
+
+    # h == 0 is now accepted and yields a finite, dry transport matrix.
+    dry = pde.compute_system_matrix(1, np.array([0.0, 0.0, 0.0]))
+    assert np.isfinite(dry).all()
 
 
 # ============================================================================ #

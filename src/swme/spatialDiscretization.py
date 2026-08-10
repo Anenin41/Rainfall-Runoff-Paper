@@ -30,16 +30,29 @@ class SpatialDiscretization(ABC):
     """
 
     # Hyperbolicity bookkeeping, shared by every scheme that eigendecomposes
-    # the transport matrix (Roe, Osher). SWME loses hyperbolicity for N >= 2
-    # at large enough moments - the eigenvalues of A(U) leave the real axis -
-    # and the solver would otherwise carry on silently, because the |lambda|
-    # viscosity is still computable from a complex spectrum. These counters
-    # make that visible at essentially zero cost: the eigenvalues have already
-    # been computed for the viscosity, so all this adds is one max-abs.
+    # a transport matrix (Roe, Osher). Free to collect: the eigenvalues have
+    # already been computed for the viscosity, so this adds one max-abs.
     #
-    # HSWME (`hyperbolic=True` on the PDE) exists precisely to prevent this,
-    # and is verified never to trip these counters - see
-    # tests/test_hyperbolicity.py.
+    # READ THE SCOPE CAREFULLY. What is eigendecomposed here is the
+    # *path-averaged* matrix sum_k w_k A(psi(s_k)) along the segment joining
+    # two neighbouring cells - not A(U) at any single state. A(U) is nonlinear
+    # in U, so that average is not A(anything), and an average of perfectly
+    # hyperbolic matrices need not itself be hyperbolic. Measured: a dam break
+    # onto a dry bed trips these counters at 78 of 12462 interfaces even at
+    # N=0, i.e. for plain shallow water, which is unconditionally hyperbolic -
+    # the jump from h=1 to h=0 across one interface is simply violent enough
+    # to bend the average off the real axis.
+    #
+    # So a nonzero count means "the scheme's interface average went complex
+    # somewhere", which is worth knowing but is NOT by itself evidence that
+    # the model lost hyperbolicity. For that question - is A(U) itself
+    # non-hyperbolic at the states this run actually visited? - use the
+    # cell-by-cell diagnostic, `ClassicalSimulation1D.store_hyperbolicity`,
+    # which evaluates A(U) per cell rather than per interface.
+    #
+    # (SWME really does lose hyperbolicity for N >= 2 at large enough
+    # moments; see tests/test_hyperbolicity.py. That is a property of the
+    # model and shows up in both diagnostics. HSWME never does.)
     hyperbolicity_tolerance = 1e-10
 
     def __init__(self):
@@ -118,6 +131,13 @@ class PVM(SpatialDiscretization,ABC):
     # See the class docstring: True only for schemes whose viscosity
     # polynomial satisfies P(0) = 0.
     well_balanced = False
+
+    # Whether this scheme's fluctuations change when delta_t changes. Roe and
+    # Osher build their viscosity from |A| alone and ignore delta_t entirely;
+    # LF and PRICE carry explicit delta_x/delta_t terms. The
+    # positivity-preserving limiter in ClassicalSimulation1D uses this to know
+    # whether shrinking delta_t obliges it to recompute the fluctuations.
+    viscosity_depends_on_timestep = True
 
     def compute_fluctuation(self,
                             value_left: np.ndarray,
@@ -365,6 +385,10 @@ class Roe(PVM):
     # lives, so this scheme is exactly well balanced over topography.
     well_balanced = True
 
+    # Q = |A| ignores delta_t, so the positivity limiter can shrink the
+    # timestep without having to recompute anything.
+    viscosity_depends_on_timestep = False
+
     def compute_viscosity(self,
                           roe_matrix: np.ndarray,
                           delta_t: float,
@@ -410,6 +434,9 @@ class Osher(PVM):
     # along the path annihilates the equilibrium jump, so each |A~(psi(s_k))|
     # does too. Exactly well balanced over topography.
     well_balanced = True
+
+    # Built from |A(psi(s_k))| only; no delta_t dependence.
+    viscosity_depends_on_timestep = False
 
     def compute_fluctuation(self,
                             value_left: np.ndarray,

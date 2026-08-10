@@ -16,7 +16,8 @@ updated as work lands.
 
 ```text
 src/swme/          # the core solver (SWME/HSWME/RechargeSWME transport, coefficients
-                   # engine, mesh, bed topography, simulation driver, numerical schemes)
+                   # engine, mesh, bed topography, wet-dry treatment, simulation
+                   # driver, numerical schemes)
 src/recharge/      # rainfall/infiltration/exfiltration extension, a sibling package to
                    # src/swme/ (imports from it, e.g. `from swme.pde import SWME1D`)
 scripts/           # repo-level utility scripts, e.g. run_thesis_configs.sh
@@ -27,7 +28,7 @@ results/           # solver output (gitignored) - CSVs and figures, organized to
                    # what processing/*.py expect; see "Reproducing the thesis test
                    # cases" below
 tests/             # pytest suite (regression tests for the coefficients/pde/source-terms
-                   # engine, plus the topography/well-balancing suite)
+                   # engine, plus the topography, hyperbolicity and wet-dry suites)
 ```
 
 ## Quick start
@@ -99,7 +100,7 @@ module docstring for the exact figure list); run after `run_thesis_configs.sh`:
 | `non_wrapping_pulse_model_comparison.py`, `plot_non_wrapping_zoom_profiles.py` | §5.3 | `results/Non_Wrapping_Pulse/` |
 | `smooth_pulse_model_comparison_cases.py` | §5.4 | `results/Smooth_Pulse/` |
 | `inflow_outflow_comparison.py` | §5.5 | `results/Smooth_Pulse_Inflow_Outflow/` |
-| `dry_wet_ablation_comparison.py`, `zoomed_dry_wet_comparison.py` | §5.6 | `results/Dry_Wet_Test/` (`Dry`/`Wet` = source-free/source-active, a pre-existing naming choice unrelated to actual dry-cell numerics, which don't exist yet - see RESTRUCTURE_PLAN.md Step 6) |
+| `dry_wet_ablation_comparison.py`, `zoomed_dry_wet_comparison.py` | §5.6 | `results/Dry_Wet_Test/` (`Dry`/`Wet` = source-free/source-active, a pre-existing naming choice unrelated to the actual wet-dry treatment described below) |
 
 ```bash
 cd processing
@@ -151,9 +152,49 @@ Two things worth knowing:
   with `bed_profile = flat`: an everywhere-zero bed leaves the solver on its original,
   non-augmented code path, verified bit-identical by test and by the reference run.
 
-Dry cells are not supported yet, so the bed must stay below the water everywhere — a
-reference level below the bed's high point fails loudly at setup rather than mid-run. See
-`RESTRUCTURE_PLAN.md` Step 6.
+A bed poking above the reference water level fails loudly at setup rather than mid-run.
+Dry cells themselves are supported — see "Wet and dry cells" below — but `lakeAtRest` is a
+lake, and a bed above its surface means the initial condition is not the one you asked for.
+
+### Wet and dry cells
+
+Dry cells (`h = 0`) are supported. Before this the solver raised `RuntimeError` the instant
+any height reached zero, so a dam break onto a dry bed could not be run at all:
+
+```bash
+uv run moment-sw --config wetdry_dam_break     # dam break onto an exactly dry bed
+```
+
+Three thresholds govern it, configurable per case and defaulting to values sized for the
+thesis' `h ~ O(1)`:
+
+```ini
+[wet_dry]
+h_dry   = 1e-4      # at/below: dry — no moments, velocity driven smoothly to zero
+h_wet   = 1e-3      # at/above: ordinary wet flow, no regularization at all
+eps_div = 1e-14     # machine-precision division guard
+```
+
+Between them the moments ramp linearly to zero, so a vanishing film relaxes to plug flow
+instead of carrying a vertical profile it cannot support. Mass is conserved exactly and the
+timestep is capped so no cell can drain below zero.
+
+Three things to know before running a drying case:
+
+- **`h_dry` is a modelling choice, not a formality.** At a vacuum front the exact solution
+  itself contains arbitrarily small depths, so a coarse `h_dry` truncates the leading edge
+  and slows the front — and refining the mesh does *not* fix it. On the standard dry dam
+  break at 800 cells, against an exact front speed of 2.0: `h_dry = 1e-4` gives 1.758,
+  `1e-8` gives 1.934, `1e-12` gives 1.984. Pushing it down is not free either, since `h_dry`
+  also floors the `ν/h²` friction term. Put it well below the smallest depth you need to
+  resolve, then check `ν/h_dry²` is still sane.
+- **With friction, use the implicit source path** (`linear_source = True` +
+  `timeIntegrator = ImplicitEuler`). Navier-slip friction carries `ν/h²`, which is stiff
+  near any drying front regardless of `h_dry`; explicit integration goes unstable, and the
+  symptom is a negative height that looks like a positivity failure but isn't. The error
+  message says so if you hit it.
+- **A config that stays wet is completely unaffected** — verified bit-identical, both on the
+  reference run and by byte-comparing regenerated thesis CSVs.
 
 ### Hyperbolicity: SWME vs. HSWME
 
@@ -174,10 +215,17 @@ slope, `|a₂/a₁| ∈ [1.14, 1.40]`, not a magnitude threshold: `a = (1.5, 1.8
 while the larger `a = (2.0, 3.0)` is fine. "Keep the moments small" is the wrong criterion;
 the *ratio* is what matters.
 
-Every run now reports loss automatically — the schemes that eigendecompose the transport
-matrix (Roe, Osher) track it for free and `run_simulation` emits a `RuntimeWarning` naming
-the count and the worst `|Im(λ)|`. For a detailed per-cell log, set
-`store_hyperbolicity = True` under `[postprocessing]`.
+Every run reports complex spectra automatically — the schemes that eigendecompose the
+transport matrix (Roe, Osher) track it for free and `run_simulation` emits a
+`RuntimeWarning` naming the count and the worst `|Im(λ)|`.
+
+**Read that warning carefully.** It measures the scheme's *path-averaged interface* matrix,
+not `A(U)` at any state. `A(U)` is nonlinear in `U`, so an average of hyperbolic matrices
+need not be hyperbolic: a wet-dry front trips it even at N=0, i.e. for plain shallow water,
+which is unconditionally hyperbolic. A nonzero count is therefore worth knowing but is not
+by itself evidence that the model lost hyperbolicity. For that question, set
+`store_hyperbolicity = True` under `[postprocessing]`, which logs the spectrum of `A(U)`
+cell by cell.
 
 All 20 thesis Chapter 5 runs were audited state by state (14.4 M states): **zero
 hyperbolicity loss**, with structural margin — their initial conditions set
@@ -206,8 +254,8 @@ be available via `uv sync --group docs` then `uv run mkdocs serve` (local previe
 See [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md)'s "Execution checklist" section for the
 authoritative, up-to-date list of completed vs. pending work. As of this writing:
 scaffolding, the arbitrary-N coefficient engine, the `swme`/`recharge` sibling-package
-rename, deletion of the out-of-scope legacy models, and well-balanced bottom topography
-are all done, and the restructure has been validated against the thesis's own results
-(§5.1/§5.2 reproduce the closed-form solutions; §5.3-§5.6 reproduced figure-by-figure via
-`scripts/run_thesis_configs.sh` + `processing/*.py`). Still pending: wet-dry treatment,
-the YAML-driven CLI rewrite, and the documentation site.
+rename, deletion of the out-of-scope legacy models, well-balanced bottom topography and
+wet-dry treatment are all done, and the restructure has been validated against the thesis's
+own results (§5.1/§5.2 reproduce the closed-form solutions; §5.3-§5.6 reproduced
+figure-by-figure via `scripts/run_thesis_configs.sh` + `processing/*.py`). Still pending:
+the YAML-driven CLI rewrite, cleanup, and the documentation site.

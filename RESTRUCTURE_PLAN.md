@@ -33,6 +33,7 @@ changes, update the relevant section rather than silently diverging from it.
 | 6 | Wet-dry treatment | Done |
 | 7 | CLI rewrite (`cli.py`, YAML config) | Pending |
 | 8 | Cleanup (`requirements.txt`, `Makefile`) | Pending |
+| 8.5 | In-package post-processing suite (PDF run reports) | Pending |
 | 9 | Documentation site (mkdocs) | Pending |
 
 **Where the code stands.** The solver runs entirely on the arbitrary-N generic engine —
@@ -591,7 +592,7 @@ already cap `I` at the available `h/dt`.
 **And a correction to Step 5.5's own detector**, which a wet-dry front exposed — see
 [§6](#6-findings-and-limitations).
 
-### Steps 7–9 — pending
+### Remaining steps
 
 - [ ] **Step 7 — CLI rewrite.** `cli.py` replacing `main.py`'s ~430-line script: YAML-driven
       (per decision 6) construction of exactly `SWME1D | RechargeSWME1D` × the PVM schemes
@@ -599,11 +600,109 @@ already cap `I` at the available `h/dt`.
       branch referencing deleted models.
 - [ ] **Step 8 — cleanup.** Delete `requirements.txt` and `Makefile` once the `uv` workflow
       is confirmed; `Makefile`'s only rule (`purge`) can move to a small script.
+- [ ] **Step 8.5 — post-processing suite.** See the design below.
 - [ ] **Step 9 — documentation site.** `mkdocs` + `mkdocs-material` + `mkdocstrings` (the
       `docs` dependency group already exists). `mkdocs.yml` at repo root and a `docs/` tree:
       index, quick start, model overview (adapted from §1–§3), configuration reference, and
-      an API reference generated from docstrings. Do this *after* Steps 7–8 so the docs
+      an API reference generated from docstrings. Do this *after* Steps 7–8.5 so the docs
       describe the final structure.
+
+#### Step 8.5 design — an in-package post-processing suite
+
+**Goal.** A `swme/report/` subpackage that renders a multi-page PDF about a single run,
+covering the fields, time histories, **vertical velocity profiles** and **hyperbolicity
+diagnostics**. Runs after Step 7 (the CLI is what invokes it) and before Step 9 (the docs
+should describe it).
+
+**The capability mostly exists already — in the wrong place.** `processing/plotter.py`
+(1,560 lines) already has a config schema, multi-format saving, column validation,
+N-agnostic moment auto-detection, velocity profiles and *seven* hyperbolicity plots. So this
+step is a **promotion and hardening of its generic core**, not a build from scratch. Three
+things make the promotion worth doing rather than just running the script:
+
+- It is unusable as a library: `CONFIG_FILE` is a relative path read at *import* time, which
+  also `mkdir`s the output directory, so it only works with `cwd = processing/`. Every
+  plotting function reads a module-level `CFG` instead of taking arguments, and it writes one
+  file per figure — there is no multi-page PDF anywhere in the repo.
+- Its hyperbolicity plots have **never once run**: every toggle is false and every
+  `recharge_hyperbolicity_*.csv` on disk is empty, because `store_hyperbolicity = False` in
+  all 20 shipped configs. Those seven code paths are unexercised and need first-time testing.
+- The profile maths is hand-rolled in **six** copies across `processing/`, each with its own
+  `phi_1`/`phi_2` and **capped at `a2`** (only `plotter.py` reaches `a3`). That is the same
+  silent-truncation defect Step 4.5 fixed inside the package, still live outside it. Use
+  `SWME1D.compute_vertical_velocity_profile` (backed by `coefficients.eval_phi`) instead.
+
+**Shape.** `swme/report/` with `data.py` (a `RunData` dataclass plus two loaders),
+`pages.py` (one function per page, each taking explicit arguments and returning a `Figure`),
+`style.py`, and `cli.py`. No module-level config, no import-time side effects, no `cwd`
+dependence — the specific lesson from `plotter.py`.
+
+`RunData` is the single intermediate representation, so pages never know where the data came
+from: `from_simulation(...)` reads a finished run in-process, `from_directory(...)` rebuilds
+from CSVs on disk. Every field except the final state is optional, which is what lets the
+report degrade gracefully on a run that captured less.
+
+**The directory loader must not read `field_history.csv` naively.** The largest on disk is
+185 MB / 1.54M rows and `results/` totals 1.4 GB. Take time series from the small
+`summary_history.csv` and stream the field history with `chunksize`, keeping only a bounded,
+evenly-spaced set of snapshot steps. Peak memory must be independent of run length.
+
+**Pages:** cover/run summary; final state (N-agnostic, no N≤6 cap); time histories;
+`h(x,t)` and `u_m(x,t)` space-time maps; vertical velocity profiles; hyperbolicity;
+wet-dry (only if any cell went below `h_wet`); topography with the `h+Z−H` residual (only
+if `mesh.has_topography`).
+
+**The hyperbolicity page must not undo §6.** The scheme counters measure the path-averaged
+*interface* matrix, not `A(U)` — and a wet-dry front trips them at N=0, plain shallow water.
+A report printing one "hyperbolicity" number would resurrect exactly the false-positive
+failure mode Steps 5.5 and 6 fixed. Keep two clearly separated panels: the always-available
+scheme-level counters, captioned as *not* evidence of model loss on their own; and the
+model-level per-cell view, shown only when `store_hyperbolicity = True` and replaced by an
+explicit "not captured, enable it with…" placeholder otherwise — never a blank, never an
+implied all-clear.
+
+**Wiring:** `moment-sw` gains `--report / --no-report` (default on) writing
+`<output-dir>/report.pdf`; a new `moment-sw-report <dir>` console script rebuilds one from
+CSVs, so the 20 existing thesis runs get reports without re-running anything.
+
+**Five defects must be fixed first — they are in the data the report would consume, and
+plotting them as-is yields a report that looks authoritative and is wrong:**
+
+- **D1** — `main.py` sets `store_history`/`store_hyperbolicity` and writes *all* CSVs only
+  inside the `RechargeSWME1D` branch, so the three non-recharge configs
+  (`topography_lake_at_rest`, `topography_perturbed_lake`, `wetdry_dam_break`) capture
+  nothing at all. Lift both out of that branch.
+- **D2** — the hyperbolicity CSVs are written *nested inside* `if len(history) > 0`, so
+  `store_hyperbolicity=True` with `store_history=False` writes nothing, while the shipped
+  default writes two empty files on every run. Gate each on its own list.
+- **D3** — `simulation.py`'s worst-cell tracker reads
+  `if np.isnan(max_abs_imag) or max_abs_imag > max_abs_imag_global`. Once a dry or failed
+  cell sets the running max to NaN it latches: `max_abs_imag_eig` stays NaN for that step and
+  `worst_cell_index`/`worst_x` point at the last NaN cell, not the worst spectrum.
+- **D4** — dry cells get `is_hyperbolic = 0`, so they inflate `num_nonhyperbolic_cells`.
+  On a wet-dry run that conflates "dry" with "ill-posed", the two things Step 6 worked
+  hardest to separate. Count them separately.
+- **D5** (labelling, not a fix) — `Osher` records 5× per interface on weight-scaled
+  single-node matrices rather than the path average, and `LF`/`PRICE` never eigendecompose
+  at all, so their counters stay 0 — a vacuous zero, not a reassuring one. The report must
+  name the scheme and must never render "0 of 0" as an all-clear.
+
+**Validation.** `tests/test_report.py`, plus the first `tests/conftest.py` (forcing
+`matplotlib.use("Agg")` — there is currently no matplotlib anywhere in `tests/`). Cover: a
+non-empty PDF with the expected page count; graceful degradation with each optional data
+source missing; both loaders agreeing for the same run; the profile page matching
+`compute_vertical_velocity_profile` directly; loader memory independent of history length;
+and all seven ported hyperbolicity plots rendering against a real
+`store_hyperbolicity = True` run. End-to-end, `--config wetdry_dam_break` must produce a
+report — that doubles as the D1 regression.
+
+**Scope guard.** Single-run reports only. `processing/` and `swme/plotting.py` are *not*
+modified; the thesis Chapter 5 multi-run comparison figures stay where they are. Two
+adjacent items are noted but not undertaken: once this lands `processing/plotter.py` is
+fully superseded and could be retired along with the ~30–35% of near-verbatim helper
+duplication across the six comparison scripts; and `run_simulation` prints four lines per
+timestep (a 1.9 MB `run.log` for one case) while `main.py` calls a blocking `plt.show()`
+unconditionally — both hostile to batch reporting.
 
 ---
 

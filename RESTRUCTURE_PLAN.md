@@ -17,7 +17,7 @@ changes, update the relevant section rather than silently diverging from it.
 
 ## Status
 
-**Steps 0–6 complete. Step 7 (CLI rewrite) is next.** 587 tests pass.
+**Steps 0–7 complete. Step 8 (cleanup) is next.** 620 tests pass.
 
 | Step | Scope | Status |
 |:--|:--|:--|
@@ -31,7 +31,7 @@ changes, update the relevant section rather than silently diverging from it.
 | 5 | Bottom topography + well-balancing | Done |
 | 5.5 | Hyperbolicity audit: SWME vs. HSWME | Done |
 | 6 | Wet-dry treatment | Done |
-| 7 | CLI rewrite (`cli.py`, YAML config) | Pending |
+| 7 | CLI rewrite (`cli.py`, YAML config) | Done |
 | 8 | Cleanup (`requirements.txt`, `Makefile`) | Pending |
 | 8.5 | In-package post-processing suite (PDF run reports) | Pending |
 | 9 | Documentation site (mkdocs) | Pending |
@@ -124,10 +124,10 @@ Settled with the user; do not re-litigate.
 5. **Package layout:** `swme` (core) with `recharge` as a **sibling** top-level package,
    not nested. `recharge` imports from `swme` as a normal cross-package import
    (`from swme.pde import SWME1D`).
-6. **Config format: real YAML**, not INI. `pyyaml` is a dependency and
-   `config/example.yaml` sketches the target schema, but the loader swap is deliberately
-   deferred to Step 7, since `main.py` is fully rewritten there anyway. Everything still
-   reads `configparser`-style `.ini` until then.
+6. **Config format: real YAML**, not INI. **Executed in Step 7**: all 24 shipped configs
+   are `.yaml`, `main.py` and every `.ini` are gone, and `cli.py` validates sections and
+   keys rather than silently defaulting. `config/example.yaml` (an unconsumed stub) was
+   deleted along with them — the shipped configs are the examples now.
 
 ---
 
@@ -425,8 +425,8 @@ recharge-paper/                    # repo root is the uv project root
 │   │   ├── timeIntegration.py
 │   │   ├── simulation.py          # Simulation (ABC) + ClassicalSimulation1D
 │   │   ├── plotting.py            # Plotting (ABC) + SWME1DPlotClassical
-│   │   ├── main.py                # -> becomes cli.py in Step 7
-│   │   └── config/                # shipped .ini cases (thesis + benchmarks)
+│   │   ├── cli.py                 # YAML config -> solver; the moment-sw entry point
+│   │   └── config/                # shipped .yaml cases (thesis + benchmarks)
 │   └── recharge/                  # sibling package, NOT nested inside swme/
 │       ├── context.py, laws.py    # order-independent, untouched
 │       ├── source_terms.py        # mass source + mixing friction
@@ -592,12 +592,62 @@ already cap `I` at the available `h/dt`.
 **And a correction to Step 5.5's own detector**, which a wet-dry front exposed — see
 [§6](#6-findings-and-limitations).
 
+### Step 7 — CLI rewrite
+
+`swme/cli.py` replaces `main.py`, and every shipped config is now YAML. The numerics are
+untouched: the same objects are built with the same values, so thesis configs reproduce
+their CSVs **byte for byte** through the new entry point.
+
+The migration was scripted rather than hand-typed — a converter walked each `.ini`,
+emitted numbers verbatim from the source text (never round-tripped through `float`), and a
+check then compared every INI-derived value against its YAML twin: **24/24 identical, all
+24 building a complete solver end to end.** Six keys were dropped as dead, verified against
+`main.py` as read by nothing: `frictionModel`, `start_order`, `structuredGrid`, `1D`,
+`resolutionY`, `y1boundary`/`y2boundary` — leftovers from models deleted in Step 4.
+
+**The format change was the means, not the point.** INI silently absorbed mistakes:
+`configparser` returned strings, so every use site needed `getfloat`/`getboolean`/`getint`,
+and a misspelled key fell through to a default rather than failing. `cli.py` validates the
+section set and each section's key set, so `viscosty:` now names itself instead of quietly
+running with the default viscosity. Values are checked by type at the boundary, and a
+quoted `"false"` — truthy in any naive loader — is rejected rather than silently enabling
+the implicit source path.
+
+**One YAML trap worth knowing.** PyYAML implements YAML 1.1, whose float pattern requires a
+*signed* exponent: `1.0e-3` is a float but `1.0e3` is a **string**. The shipped configs
+happened to use signed exponents throughout, but the converter normalises the form anyway
+and `cli.py` coerces numeric-looking strings with an error message that names the rule.
+
+**Three latent defects fixed while rewriting:**
+
+- Unsupported values used to `print` and continue — `'PDE_type is not implemented yet'` was
+  followed by a `NameError` on the undefined `_pde`, and the pvm and time-integrator
+  dispatches had the same shape. They raise now.
+- `linear_source: true` returns a *matrix* that only `ImplicitEuler` applies. Pairing it
+  with any other integrator was a silent wrong answer, prevented only by how `main.py`
+  happened to compose them. It is now a startup error.
+- **Defect D1 from Step 8.5 resolved early.** All CSV output sat inside the
+  `RechargeSWME1D` branch, so a plain SWME1D/HSWME1D run — including the shipped topography
+  and wet-dry cases — produced no numerical artifact at all. Output is model-agnostic now
+  (`swme_N1_final.csv` and friends); recharge filenames are unchanged, because
+  `processing/*.py` matches them exactly.
+
+**Two deliberate behaviour changes**, neither touching numerics: plotting is now opt-in via
+`--plot`, since a solver that blocks on an interactive window at the end of every run is
+wrong for scripted use — and was the reason `run_thesis_configs.sh` has to set
+`MPLBACKEND=Agg`. And `main()` returns `None`: the console-script wrapper calls
+`sys.exit(main())`, so returning the data array made `sys.exit` print it to stderr and exit
+**1**, which looks exactly like a crash even though the run and its CSVs were fine. Callers
+who want the array should use `cli.run()`, which returns it.
+
+**Validation.** `tests/test_cli.py`, 33 tests (suite 587 → 620): every shipped config loads
+*and builds*; thesis parameters spot-checked against the thesis tables directly; no config
+value silently parsed as a string; and one test per failure mode the rewrite exists to
+catch. Byte-identity re-confirmed against `results/` after the swap.
+
 ### Remaining steps
 
-- [ ] **Step 7 — CLI rewrite.** `cli.py` replacing `main.py`'s ~430-line script: YAML-driven
-      (per decision 6) construction of exactly `SWME1D | RechargeSWME1D` × the PVM schemes
-      × `{ExplicitEuler, ImplicitEuler, Exact}` × `ClassicalSimulation1D`. Strip every
-      branch referencing deleted models.
+- [x] **Step 7 — CLI rewrite.** Done; see the entry above.
 - [ ] **Step 8 — cleanup.** Delete `requirements.txt` and `Makefile` once the `uv` workflow
       is confirmed; `Makefile`'s only rule (`purge`) can move to a small script.
 - [ ] **Step 8.5 — post-processing suite.** See the design below.

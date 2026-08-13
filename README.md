@@ -42,7 +42,7 @@ uv sync
 # Run the test suite
 uv run pytest -q
 
-# Run the default case (src/swme/config/config.ini)
+# Run the default case (src/swme/config/config.yaml)
 uv run moment-sw
 
 # List the configs shipped in src/swme/config/
@@ -51,12 +51,18 @@ uv run moment-sw --list-configs
 # Run a specific case by name (or by path), with a chosen output directory
 uv run moment-sw --config thesis_5p3_pulse_N1 --output-dir results/5p3
 
-# On a headless machine, avoid plt.show() blocking/erroring:
-MPLBACKEND=Agg uv run moment-sw --config thesis_5p2_horton_at_rest
+# Show the interactive summary figure when the run finishes (off by default,
+# because it blocks until the window is closed)
+uv run moment-sw --config thesis_5p2_horton_at_rest --plot
 ```
 
+Configs are YAML, with sections `pde`, `grid`, `numerics` (required) and
+`topography`, `wet_dry`, `postprocessing` (optional). Unknown sections and unknown keys
+are rejected rather than silently ignored, so a typo names itself instead of quietly
+falling back to a default.
+
 Solver output (CSV snapshots, history, hyperbolicity diagnostics) goes to
-`--output-dir`, else the config's `postprocessing/recharge_output_dir`, else
+`--output-dir`, else the config's `postprocessing.output_dir`, else
 `Data-processing/Results/Recharge/`. Filenames follow the original naming
 (`recharge_{swme,hswme}_N{order}_{infiltration}_*.csv`) with **no** run-identifying
 prefix, since `processing/*.py`'s comparisons expect exactly that naming inside a
@@ -71,7 +77,8 @@ from its runtime-parameter tables — `thesis_5p1_mixing_aR{0,1,2}` (§5.1, rain
 validation), `thesis_5p2_horton_at_rest` (§5.2), `thesis_5p3_pulse_N{0,1,2}` (§5.3),
 `thesis_5p4_horton[_aggressive]_N{0,1,2}` (§5.4, periodic, mild and aggressive pulses),
 `thesis_5p5_horton_N{0,1,2}` (§5.5, open boundary), and
-`thesis_5p6_source_{free,active}_N{1,2}` (§5.6 ablation) — 20 configs in total.
+`thesis_5p6_source_{free,active}_N{1,2}` (§5.6 ablation) — 20 configs in total, plus
+`config`, the two `topography_*` benchmarks and `wetdry_dam_break`.
 
 Run all of them, laid out under `results/` exactly as `processing/*.py` expects (see
 below), with:
@@ -112,23 +119,23 @@ MPLBACKEND=Agg uv run python non_wrapping_pulse_model_comparison.py
 
 ### Bottom topography and well-balancing
 
-A non-flat bed `Z(x)` is opt-in per config via a `[topography]` section. It is coupled into
+A non-flat bed `Z(x)` is opt-in per config via a `topography:` section. It is coupled into
 the scheme by augmenting the path-conservative state to `W = (U, Z)` and widening the
 system matrix, so the bed-slope non-conservative product goes through the same
 Castro–Parés machinery already used for the moment transport — no separate hydrostatic
 reconstruction step.
 
-```ini
-[pde_information]
-initialCondition = lakeAtRest        # or perturbedLakeAtRest
+```yaml
+pde:
+  initial_condition: lakeAtRest   # or perturbedLakeAtRest
 
-[topography]
-bed_profile = gaussian_bump          # flat | linear_slope | gaussian_bump |
-                                     # parabolic_bump | sinusoidal | step | tanh_step
-amplitude = 0.4                      # remaining keys are the profile's own parameters
-center = 0.5
-width = 0.1
-reference_water_level = 2.0          # free surface H of a lake at rest: h(x) = H - Z(x)
+topography:
+  bed_profile: gaussian_bump      # flat | linear_slope | gaussian_bump |
+                                  # parabolic_bump | sinusoidal | step | tanh_step
+  amplitude: 0.4                  # remaining keys are the profile's own parameters
+  center: 0.5
+  width: 0.1
+  reference_water_level: 2.0      # free surface H of a lake at rest: h(x) = H - Z(x)
 ```
 
 ```bash
@@ -143,13 +150,13 @@ RechargeSWME alike — see `tests/test_topography.py`.
 
 Two things worth knowing:
 
-- **Use `pvm = Roe` (or `Osher`) with topography.** Well-balancing needs the scheme's
+- **Use `pvm: Roe` (or `Osher`) with topography.** Well-balancing needs the scheme's
   numerical viscosity to annihilate the equilibrium jump, which holds exactly when its
   viscosity polynomial satisfies `P(0) = 0`. Roe and Osher qualify; `LF` and `PRICE` do
   not, and leave an `O(dx/dt · dh)` residual at rest. The solver emits a `RuntimeWarning`
   if you pair topography with one of them. All the thesis configs already use Roe.
-- **A config without a `[topography]` section is completely unaffected**, and so is one
-  with `bed_profile = flat`: an everywhere-zero bed leaves the solver on its original,
+- **A config without a `topography:` section is completely unaffected**, and so is one
+  with `bed_profile: flat`: an everywhere-zero bed leaves the solver on its original,
   non-augmented code path, verified bit-identical by test and by the reference run.
 
 A bed poking above the reference water level fails loudly at setup rather than mid-run.
@@ -168,11 +175,11 @@ uv run moment-sw --config wetdry_dam_break     # dam break onto an exactly dry b
 Three thresholds govern it, configurable per case and defaulting to values sized for the
 thesis' `h ~ O(1)`:
 
-```ini
-[wet_dry]
-h_dry   = 1e-4      # at/below: dry — no moments, velocity driven smoothly to zero
-h_wet   = 1e-3      # at/above: ordinary wet flow, no regularization at all
-eps_div = 1e-14     # machine-precision division guard
+```yaml
+wet_dry:
+  h_dry: 1.0e-4     # at/below: dry — no moments, velocity driven smoothly to zero
+  h_wet: 1.0e-3     # at/above: ordinary wet flow, no regularization at all
+  eps_div: 1.0e-14  # machine-precision division guard
 ```
 
 Between them the moments ramp linearly to zero, so a vanishing film relaxes to plug flow
@@ -188,8 +195,8 @@ Three things to know before running a drying case:
   `1e-8` gives 1.934, `1e-12` gives 1.984. Pushing it down is not free either, since `h_dry`
   also floors the `ν/h²` friction term. Put it well below the smallest depth you need to
   resolve, then check `ν/h_dry²` is still sane.
-- **With friction, use the implicit source path** (`linear_source = True` +
-  `timeIntegrator = ImplicitEuler`). Navier-slip friction carries `ν/h²`, which is stiff
+- **With friction, use the implicit source path** (`linear_source: true` +
+  `time_integrator: ImplicitEuler`). Navier-slip friction carries `ν/h²`, which is stiff
   near any drying front regardless of `h_dry`; explicit integration goes unstable, and the
   symptom is a negative height that looks like a positivity failure but isn't. The error
   message says so if you hit it.
@@ -224,7 +231,7 @@ not `A(U)` at any state. `A(U)` is nonlinear in `U`, so an average of hyperbolic
 need not be hyperbolic: a wet-dry front trips it even at N=0, i.e. for plain shallow water,
 which is unconditionally hyperbolic. A nonzero count is therefore worth knowing but is not
 by itself evidence that the model lost hyperbolicity. For that question, set
-`store_hyperbolicity = True` under `[postprocessing]`, which logs the spectrum of `A(U)`
+`store_hyperbolicity: true` under `postprocessing:`, which logs the spectrum of `A(U)`
 cell by cell.
 
 All 20 thesis Chapter 5 runs were audited state by state (14.4 M states): **zero
@@ -258,4 +265,4 @@ rename, deletion of the out-of-scope legacy models, well-balanced bottom topogra
 wet-dry treatment are all done, and the restructure has been validated against the thesis's
 own results (§5.1/§5.2 reproduce the closed-form solutions; §5.3-§5.6 reproduced
 figure-by-figure via `scripts/run_thesis_configs.sh` + `processing/*.py`). Still pending:
-the YAML-driven CLI rewrite, cleanup, and the documentation site.
+cleanup, an in-package post-processing suite, and the documentation site.

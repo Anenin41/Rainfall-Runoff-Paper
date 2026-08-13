@@ -1,0 +1,37 @@
+pde:
+  type: RechargeSWME1D
+  slip_length: 1.0
+  viscosity: 1.0e-3
+  linear_source: false
+  hyperbolic: false
+  mixing_friction_model: admissible
+  alpha_R: 1.0
+  alpha_I: 1.0
+  initial_condition: smooth_nested_profile_pulse_mild
+  infiltration_type: constant
+  rainfall_rate: 1.0e-1
+  constant_infiltration_rate: -5.0e-2
+  constant_infiltration_eps: 1.0e-16
+  constant_limit_by_rainfall: false
+  constant_limit_by_available_water: false
+
+grid:
+  resolution_x: 300
+  x1: 0.0
+  x2: 2.0
+
+numerics:
+  t_end: 0.4
+  method: classical
+  order: 1
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: PERIODIC
+
+postprocessing:
+  output_dir: Data-processing/Results/Recharge
+  store_history: true
+  store_hyperbolicity: false
+  history_stride: 1
+  hyperbolicity_stride: 1

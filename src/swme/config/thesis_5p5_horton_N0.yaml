@@ -1,0 +1,39 @@
+# Thesis test case: 5.5 Open-boundary Horton pulse, N=0
+# Reproduces the runtime parameters of Table 5 in the thesis.
+# Run with:  uv run moment-sw --config thesis_5p5_horton_N0
+
+pde:
+  type: RechargeSWME1D
+  slip_length: 1.0
+  viscosity: 1.0e-3
+  linear_source: false
+  hyperbolic: false
+  initial_condition: smooth_nested_profile_pulse_mild
+  mixing_friction_model: admissible
+  alpha_R: 1.0
+  alpha_I: 0.0
+  rainfall_rate: 0.2
+  infiltration_type: horton
+  horton_f0: 0.24
+  horton_fc: 0.14
+  horton_k: 1.0
+
+grid:
+  resolution_x: 450
+  x1: 0.0
+  x2: 1.0
+
+numerics:
+  t_end: 1.8
+  method: classical
+  order: 0
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: INFLOW_OUTFLOW
+
+postprocessing:
+  store_history: true
+  store_hyperbolicity: false
+  history_stride: 1
+  hyperbolicity_stride: 1

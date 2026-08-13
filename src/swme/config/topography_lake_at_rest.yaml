@@ -11,33 +11,32 @@
 # select one here. See spatialDiscretization.SpatialDiscretization.
 #
 # Run with:  uv run moment-sw --config topography_lake_at_rest
-[pde_information]
-1D = True
-pde_type = SWME1D
-slipLength = 1.0
-viscosity = 0.0
-linear_source = False
-hyperbolic = False
-initialCondition = lakeAtRest
 
-[topography]
-bed_profile = gaussian_bump
-amplitude = 0.4
-center = 0.5
-width = 0.1
-reference_water_level = 2.0
+pde:
+  type: SWME1D
+  slip_length: 1.0
+  viscosity: 0.0
+  linear_source: false
+  hyperbolic: false
+  initial_condition: lakeAtRest
 
-[grid_information]
-structuredGrid = True
-resolutionX = 100
-x1boundary = 0.0
-x2boundary = 1.0
+grid:
+  resolution_x: 100
+  x1: 0.0
+  x2: 1.0
 
-[numerical_method_information]
-t_end = 1.0
-method = classical
-order = 1
-fvm_type = PVM
-pvm = Roe
-timeIntegrator = ExplicitEuler
-boundaryCondition = INFLOW_OUTFLOW
+numerics:
+  t_end: 1.0
+  method: classical
+  order: 1
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: INFLOW_OUTFLOW
+
+topography:
+  bed_profile: gaussian_bump
+  amplitude: 0.4
+  center: 0.5
+  width: 0.1
+  reference_water_level: 2.0

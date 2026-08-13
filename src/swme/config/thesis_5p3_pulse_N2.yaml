@@ -1,0 +1,39 @@
+# Thesis test case: 5.3 Symmetric constant rainfall-exfiltration pulse, N=2
+# Reproduces the runtime parameters of Table 3 in the thesis.
+# Run with:  uv run moment-sw --config thesis_5p3_pulse_N2
+
+pde:
+  type: RechargeSWME1D
+  slip_length: 1.0
+  viscosity: 1.0e-3
+  linear_source: false
+  hyperbolic: false
+  initial_condition: smooth_nested_profile_pulse_mild
+  mixing_friction_model: admissible
+  alpha_R: 1.0
+  alpha_I: 1.0
+  rainfall_rate: 0.1
+  infiltration_type: constant
+  constant_infiltration_rate: -0.1
+  constant_limit_by_rainfall: false
+  constant_limit_by_available_water: false
+
+grid:
+  resolution_x: 450
+  x1: 0.0
+  x2: 3.0
+
+numerics:
+  t_end: 1.0
+  method: classical
+  order: 2
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: PERIODIC
+
+postprocessing:
+  store_history: true
+  store_hyperbolicity: false
+  history_stride: 1
+  hyperbolicity_stride: 1

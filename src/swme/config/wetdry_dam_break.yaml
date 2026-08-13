@@ -26,31 +26,30 @@
 # depth you need to resolve, then check that nu/h_dry^2 is still sane.
 #
 # Run with:  uv run moment-sw --config wetdry_dam_break
-[pde_information]
-1D = True
-pde_type = SWME1D
-slipLength = 1.0
-viscosity = 0.0
-linear_source = False
-hyperbolic = False
-initialCondition = damBreak_dryBed
 
-[wet_dry]
-h_dry = 1.0e-10
-h_wet = 1.0e-9
-eps_div = 1.0e-14
+pde:
+  type: SWME1D
+  slip_length: 1.0
+  viscosity: 0.0
+  linear_source: false
+  hyperbolic: false
+  initial_condition: damBreak_dryBed
 
-[grid_information]
-structuredGrid = True
-resolutionX = 200
-x1boundary = -1.0
-x2boundary = 1.0
+grid:
+  resolution_x: 200
+  x1: -1.0
+  x2: 1.0
 
-[numerical_method_information]
-t_end = 0.2
-method = classical
-order = 1
-fvm_type = PVM
-pvm = Roe
-timeIntegrator = ExplicitEuler
-boundaryCondition = INFLOW_OUTFLOW
+numerics:
+  t_end: 0.2
+  method: classical
+  order: 1
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: INFLOW_OUTFLOW
+
+wet_dry:
+  h_dry: 1.0e-10
+  h_wet: 1.0e-9
+  eps_div: 1.0e-14

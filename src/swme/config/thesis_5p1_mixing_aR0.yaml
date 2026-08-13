@@ -1,0 +1,39 @@
+# Thesis test case: 5.1 Rainfall-induced mixing-friction closure, alpha_R=0
+# Reproduces the runtime parameters of Table 1 in the thesis.
+# Run with:  uv run moment-sw --config thesis_5p1_mixing_aR0
+
+pde:
+  type: RechargeSWME1D
+  slip_length: 1.0
+  viscosity: 0.0
+  linear_source: false
+  hyperbolic: false
+  initial_condition: constantHeight_constantVelocity
+  mixing_friction_model: admissible
+  alpha_R: 0.0
+  alpha_I: 0.0
+  rainfall_rate: 1.0
+  infiltration_type: constant
+  constant_infiltration_rate: 0.0
+  constant_limit_by_rainfall: false
+  constant_limit_by_available_water: false
+
+grid:
+  resolution_x: 400
+  x1: 0.0
+  x2: 10.0
+
+numerics:
+  t_end: 1.0
+  method: classical
+  order: 0
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: PERIODIC
+
+postprocessing:
+  store_history: true
+  store_hyperbolicity: false
+  history_stride: 1
+  hyperbolicity_stride: 1

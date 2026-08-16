@@ -31,8 +31,14 @@ __pycache__/
 *.csv
 *.jpg
 *.jpeg
-data/
 results/
+
+# build / tool caches
+dist/
+build/
+*.egg-info/
+.ruff_cache/
+.mypy_cache/
 
 # ...but the test golden fixtures ARE source, not generated output: they hold
 # reference values captured from the pre-refactor solver and the regression

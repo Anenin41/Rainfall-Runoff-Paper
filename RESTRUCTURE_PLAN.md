@@ -17,7 +17,7 @@ changes, update the relevant section rather than silently diverging from it.
 
 ## Status
 
-**Steps 0–7 complete. Step 8 (cleanup) is next.** 620 tests pass.
+**Steps 0–8 complete. Step 8.5 (post-processing suite) is next.** 620 tests pass.
 
 | Step | Scope | Status |
 |:--|:--|:--|
@@ -32,7 +32,7 @@ changes, update the relevant section rather than silently diverging from it.
 | 5.5 | Hyperbolicity audit: SWME vs. HSWME | Done |
 | 6 | Wet-dry treatment | Done |
 | 7 | CLI rewrite (`cli.py`, YAML config) | Done |
-| 8 | Cleanup (`requirements.txt`, `Makefile`) | Pending |
+| 8 | Cleanup (dead code, stale docs, `purge` tool) | Done |
 | 8.5 | In-package post-processing suite (PDF run reports) | Pending |
 | 9 | Documentation site (mkdocs) | Pending |
 
@@ -645,11 +645,58 @@ who want the array should use `cli.run()`, which returns it.
 value silently parsed as a string; and one test per failure mode the rewrite exists to
 catch. Byte-identity re-confirmed against `results/` after the swap.
 
+### Step 8 — cleanup
+
+Wider than the one-line scope this document originally gave it, because Steps 4–7 left more
+debris than `requirements.txt` and the `Makefile`. **No numerics moved** — every change is
+either a deletion of provably-unused code or a change to what a run prints / where it writes
+by default. Byte-identity re-confirmed against `results/` afterwards.
+
+**Deleted.** `src/swme/Makefile` (its `purge` rule was broken as written: CWD-relative paths
+that resolved to a directory which never existed); `src/swme/requirements.txt` (stale pins,
+and missing `sympy` and `pyyaml`, both hard runtime imports); the empty `Data-processing/`
+tree; `recharge/laws.py`'s three `horton_test*` demos and `__main__` block (**244 lines**,
+imported by nothing, with a default argument pointing at the deleted `config.txt` via a path
+that never resolved); `mesh.py`'s `UniformRectangularMesh2D` (fully orphaned — one repo-wide
+hit, its own `class` statement); and `RechargeSWME1D`'s write-only `eps_dry` parameter.
+
+**Quieted.** `run_simulation` printed four lines *per timestep* — 1.9 MB of log for one
+thesis case. Now behind `ClassicalSimulation1D.verbose` (default off) and `moment-sw
+--verbose`. Measured: a `wetdry_dam_break` run went from thousands of stdout lines to **6**.
+Relatedly, `cli.py` imported `swme.plotting` — and therefore `pyplot` — at module scope, so
+every scripted run paid for a matplotlib import it never used; that is now inside the
+`if plot:` branch, which also retires the last reason `run_thesis_configs.sh` needs
+`MPLBACKEND=Agg`.
+
+**Output directory.** The default was still `Data-processing/Results/Recharge`, a path from
+before `results/` was the convention. It is now `results/<config-name>/`. That is not
+cosmetic: runs previously shared one directory *and* one set of filenames, so a second run
+silently overwrote the first — the exact hazard Step 4.5 hit, and the reason a `purge` tool
+was wanted in the first place. Segregating by config name removes it at the source.
+
+**`purge` re-homed as a curation tool, not an `rm -rf`.** `src/swme/purge.py`, registered so
+`uv run purge` works. Its stated original purpose was keeping track of which runs were worth
+keeping, which is a *seeing* problem — so listing is the default (name, size, file count,
+last modified, newest first), deletion needs `--delete` plus a pattern, and it confirms
+before removing anything.
+
+**Docs.** Both package READMEs described a layout that no longer exists — `main.py`,
+`config/config.txt`, `recharge/` nested inside `swme/`, `Data-processing/`, and the deleted
+vegetation / Hermite / adaptive / micro-macro models; `src/recharge/README.md` told you to
+`pip install -r requirements.txt`, a file that never existed there. Both are now short
+pointers at the root `README.md` and this document, which is the only way they stop drifting.
+Also fixed: a stale `main.py` reference in `run_thesis_configs.sh` that was inside the range
+`--help` prints, a `.ini` filename in a config comment, and `.gitignore`'s no-op `data/` rule
+(no such directory) plus missing build/cache entries.
+
+**No dependency was removable** — all seven are genuinely imported. Worth recording anyway:
+`scipy`'s only use is `spopt.newton` in `timeIntegration.py`, reachable solely through
+`ImplicitEuler`, which **no shipped config selects** (tests only).
+
 ### Remaining steps
 
 - [x] **Step 7 — CLI rewrite.** Done; see the entry above.
-- [ ] **Step 8 — cleanup.** Delete `requirements.txt` and `Makefile` once the `uv` workflow
-      is confirmed; `Makefile`'s only rule (`purge`) can move to a small script.
+- [x] **Step 8 — cleanup.** Done; see the entry above.
 - [ ] **Step 8.5 — post-processing suite.** See the design below.
 - [ ] **Step 9 — documentation site.** `mkdocs` + `mkdocs-material` + `mkdocstrings` (the
       `docs` dependency group already exists). `mkdocs.yml` at repo root and a `docs/` tree:
@@ -876,13 +923,9 @@ Not blocking; decide at implementation time.
   it entirely and would have sped up the legacy structure too. A sizeable refactor of the
   time loop, deliberately not bundled into this restructure, but it is the correct answer
   to the performance question and worth doing before any large production runs.
-- **`eps_dry` on `RechargeSWME1D`** is still accepted as a constructor argument but is read
-  by nothing — it was the threshold behind the "rain cannot wet dry ground" bug. Harmless,
-  but a quiet trap: setting it looks like tuning the dry handling while doing nothing.
 - **Soft upper bound on N** (~10–12 estimated, where the moment closure itself becomes
   physically questionable, independent of engine performance) — worth documenting once
   arbitrary N is exercised, not enforcing as a hard cap.
-- **`Makefile`'s `purge` rule** — script or hatch hook, decide during Step 8, low stakes.
 - **`recharge/initial_conditions.py`** has small per-order-capped hardcoding (effectively
   N≤2 for one profile), trivially loop-generalizable. Low priority: test-IC construction,
   not core physics.

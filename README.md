@@ -63,7 +63,7 @@ falling back to a default.
 
 Solver output (CSV snapshots, history, hyperbolicity diagnostics) goes to
 `--output-dir`, else the config's `postprocessing.output_dir`, else
-`Data-processing/Results/Recharge/`. Filenames follow the original naming
+`results/<config-name>/` — so two runs cannot silently overwrite each other. Filenames follow the original naming
 (`recharge_{swme,hswme}_N{order}_{infiltration}_*.csv`) with **no** run-identifying
 prefix, since `processing/*.py`'s comparisons expect exactly that naming inside a
 per-case subfolder — give each run its own `--output-dir` (as

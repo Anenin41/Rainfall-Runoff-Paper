@@ -39,7 +39,6 @@ import yaml
 
 from . import mesh
 from . import pde
-from . import plotting
 from . import simulation
 from . import spatialDiscretization
 from . import timeIntegration
@@ -523,6 +522,10 @@ def main(argv=None):
         '--list-configs', action='store_true',
         help='List the configs shipped in swme/config/ and exit.')
     parser.add_argument(
+        '-v', '--verbose', action='store_true',
+        help='Print per-timestep progress. Off by default: it is four lines '
+             'per step, which buries anything useful in a batch sweep.')
+    parser.add_argument(
         '--plot', action='store_true',
         help='Show the interactive summary figure when the run finishes. Off '
              'by default: it blocks until the window is closed, which is wrong '
@@ -534,7 +537,8 @@ def main(argv=None):
             print(name)
         return None
 
-    run(args.config, output_dir=args.output_dir, plot=args.plot)
+    run(args.config, output_dir=args.output_dir, plot=args.plot,
+        verbose=args.verbose)
 
     # Deliberately returns None. The console-script wrapper calls
     # `sys.exit(main())`, so returning the data array here would hand
@@ -544,7 +548,7 @@ def main(argv=None):
     return None
 
 
-def run(config=None, *, output_dir=None, plot=False):
+def run(config=None, *, output_dir=None, plot=False, verbose=False):
     """Build and run a simulation from a config, returning the final state.
 
     The importable counterpart to `main()`: same behaviour, but returns the
@@ -564,10 +568,14 @@ def run(config=None, *, output_dir=None, plot=False):
     order = _integer(numerics, 'numerics', 'order')
     t_end = _number(numerics, 'numerics', 't_end')
 
+    # Default to a per-config subdirectory of results/. Runs used to share
+    # one directory and one set of filenames, so a second run silently
+    # overwrote the first; segregating by config name makes that impossible
+    # without anyone having to remember --output-dir.
     output_dir = (
         output_dir
         or postprocessing.get('output_dir')
-        or 'Data-processing/Results/Recharge'
+        or os.path.join('results', config_path.stem)
     )
     os.makedirs(output_dir, exist_ok=True)
 
@@ -587,6 +595,7 @@ def run(config=None, *, output_dir=None, plot=False):
     )
 
     # Diagnostics capture, for every model rather than recharge only.
+    _simulation.verbose = verbose
     _simulation.store_history = _boolean(
         postprocessing, 'postprocessing', 'store_history', True)
     _simulation.store_hyperbolicity = _boolean(
@@ -614,6 +623,9 @@ def run(config=None, *, output_dir=None, plot=False):
     print(f"output: {output_dir}")
 
     if plot:
+        # Imported here, not at module scope: swme.plotting pulls in pyplot,
+        # which every scripted run would otherwise pay for and never use.
+        from . import plotting
         plotting.SWME1DPlotClassical(_pde, _mesh, _simulation).plot(data_array)
 
     return data_array

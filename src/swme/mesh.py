@@ -152,18 +152,3 @@ class UniformRectangularMesh1D(RectangularMesh):
         # confined to the two edge interfaces.
         self.bed_boundary_condition = boundary_condition
         self.has_topography = bool(np.any(bed != 0.0))
-
-
-class UniformRectangularMesh2D(RectangularMesh):
-    def __init__(self, boundaries, resolution):
-        self.boundaries = boundaries
-        self.resolution = resolution
-
-        self.cell_center_positions = self._compute_cell_centers()
-
-    def _compute_cell_centers(self):
-        # cell_centers_x = np.linspace(self.boundaries[0,0], self.boundaries[0,1], self.resolution[0])
-        cell_centers_x = np.linspace(self.boundaries[0,0], self.boundaries[0,1], self.resolution[0]+2)[1:-1]
-        cell_centers_y = np.linspace(self.boundaries[1,0], self.boundaries[1,1], self.resolution[1]+2)[1:-1]
-        cell_centers = [cell_centers_x,cell_centers_y]
-        return cell_centers

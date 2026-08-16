@@ -1,7 +1,7 @@
 # Perturbation of a lake at rest over a Gaussian bump.
 #
 # The standard follow-up to the C-property test (see
-# topography_lake_at_rest.ini): the same bed and the same still lake, plus a
+# topography_lake_at_rest.yaml): the same bed and the same still lake, plus a
 # small Gaussian bump on the free surface. A well-balanced scheme lets that
 # perturbation propagate and interact with the bed while generating no spurious
 # waves of its own - the free-surface deviation must stay of the order of the

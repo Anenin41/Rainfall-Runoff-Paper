@@ -34,7 +34,6 @@ class RechargeSWME1D(SWME1D):
             rainfall_rate : float,
             infiltration_model : object,
             mixing_friction_model : object,
-            eps_dry : float = 1e-14,
             topography : TopographySettings | None = None,
             wet_dry : WetDryThresholds | None = None,
     ):
@@ -55,12 +54,6 @@ class RechargeSWME1D(SWME1D):
         self.source_context = SourceContext()
         self.mixing_friction_model = mixing_friction_model
 
-        # Legacy machine-precision division guard, kept only so existing
-        # callers that pass it keep working. The physically meaningful dry
-        # thresholds now live on `self.wet_dry` (a WetDryThresholds, set by
-        # SWME1D.__init__) and are what the source terms actually use -
-        # RESTRUCTURE_PLAN.md Step 6.
-        self.eps_dry = eps_dry
 
     # Manually set the context for the source terms
     # Probably going to be needed in the future

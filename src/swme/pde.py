@@ -385,7 +385,7 @@ class SWME1D(PDE):
     
     Implemented methods from interface PDE
     ---------------------------------
-    def init(self, initial_condition,viscosity,slip_length,hyperbolic,linear_source,exact_source_computation):
+    def __init__(self, initial_condition, viscosity, slip_length, hyperbolic, linear_source, topography, wet_dry):
         initializes the SWME1D object
     def compute_system_matrix(self,order,values):
         computes the system matrix of the partial differential equation evaluated in the given values, for the given order.

@@ -10,8 +10,7 @@
 #   scripts/run_thesis_configs.sh -j 4 5p3 5p6    # only cases matching these tags
 #
 # Output goes to results/<Section>/<case-subfolder>/, one directory per run
-# (never shared - see the note in src/swme/main.py's compute_source_term
-# call site about why that matters). A log per run is kept alongside the
+# (never shared - see the note in src/swme/cli.py's _output_prefix about why that matters). A log per run is kept alongside the
 # CSVs; a run summary prints at the end and a non-zero exit status is
 # returned if anything failed.
 

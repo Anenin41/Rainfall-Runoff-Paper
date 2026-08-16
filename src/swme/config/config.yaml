@@ -30,7 +30,6 @@ numerics:
   boundary_condition: PERIODIC
 
 postprocessing:
-  output_dir: Data-processing/Results/Recharge
   store_history: true
   store_hyperbolicity: false
   history_stride: 1

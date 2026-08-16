@@ -204,6 +204,11 @@ class ClassicalSimulation1D(Simulation):
         self.history_stride = 10                        # stride for storing
         self.history = []                               # array to store in
 
+        # Per-timestep progress output. Off by default: printing four lines
+        # per step produced a 1.9 MB log for a single thesis case, which is
+        # useless in a batch sweep and drowns the diagnostics that matter.
+        self.verbose = False
+
         # Optional hyperbolicity diagnostics
         # If enabled, the solver checks the local transport matrix in each 
         # physical cell, computes its eigenvalues and stores both a detailed
@@ -661,10 +666,8 @@ class ClassicalSimulation1D(Simulation):
                     # created here, so keep a running total of how much.
                     self.mass_created_by_clamping -= values[i, 0] * delta_x
                     values[i, 0] = 0.0
-            print()
-            print('time: '+str(t))
-            print('step size: '+str(delta_t))
-            print()
+            if self.verbose:
+                print(f'  step {step}  t = {t:.6g}  dt = {delta_t:.6g}')
 
 
             t += delta_t

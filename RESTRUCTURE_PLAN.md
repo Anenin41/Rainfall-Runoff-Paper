@@ -17,7 +17,7 @@ changes, update the relevant section rather than silently diverging from it.
 
 ## Status
 
-**Steps 0–8.5 complete. Step 9 (documentation site) is next.** 685 tests pass.
+**All steps complete (0 through 9).** 685 tests pass.
 
 | Step | Scope | Status |
 |:--|:--|:--|
@@ -34,7 +34,7 @@ changes, update the relevant section rather than silently diverging from it.
 | 7 | CLI rewrite (`cli.py`, YAML config) | Done |
 | 8 | Cleanup (dead code, stale docs, `purge` tool) | Done |
 | 8.5 | In-package post-processing suite (PDF run reports) | Done |
-| 9 | Documentation site (mkdocs) | Pending |
+| 9 | Documentation site (mkdocs) | Done |
 
 **Where the code stands.** The solver runs entirely on the arbitrary-N generic engine —
 every hardcoded `if order == N` block is gone and the `RechargeSWME1D` N ∈ {0,1,2} cap is
@@ -698,11 +698,34 @@ Also fixed: a stale `main.py` reference in `run_thesis_configs.sh` that was insi
 - [x] **Step 7 — CLI rewrite.** Done; see the entry above.
 - [x] **Step 8 — cleanup.** Done; see the entry above.
 - [x] **Step 8.5 — post-processing suite.** Done in three phases; see the entries above.
-- [ ] **Step 9 — documentation site.** `mkdocs` + `mkdocs-material` + `mkdocstrings` (the
-      `docs` dependency group already exists). `mkdocs.yml` at repo root and a `docs/` tree:
-      index, quick start, model overview (adapted from §1–§3), configuration reference, and
-      an API reference generated from docstrings. Do this *after* Steps 7–8.5 so the docs
-      describe the final structure.
+- [x] **Step 9 — documentation site.** Done; see the entry below.
+
+#### Step 9 — documentation site
+
+`mkdocs.yml` at the repo root and eight pages under `docs/`: home, quick start, the model,
+the numerical method, a configuration reference, run reports, measured limitations, and an
+API reference generated from the docstrings by `mkdocstrings`. Material theme, with
+mathematics rendered through MathJax (`pymdownx.arithmatex` in generic mode).
+
+**Written for a reader, not as a spec dump.** This document is a design record and reads
+like one; the site is not a copy of it. §1–§3 were rewritten as explanation — why moment
+models exist at all, what the shifted Legendre basis buys, why a non-conservative system
+needs a path-conservative scheme, why a lake at rest is the hard case for topography. §6
+became a page called "What to watch out for", kept in full because those are the findings a
+user most needs before trusting a number.
+
+**Two source docstrings were genuinely wrong** and `--strict` caught them: `pde.py`'s
+`get_initial_values` documented a parameter `initial condition` (with a space) that
+therefore matched nothing in the signature, and `wetdry.py`'s `WetDryThresholds`
+continuation lines were indented two spaces where numpydoc wants four, so the `h_dry`
+trade-off text was being mis-parsed. Both fixed.
+
+The configuration reference was generated against the live `_SECTION_KEYS`, `_SCHEMES` and
+`_INTEGRATORS` rather than transcribed, so it cannot drift from what the loader accepts
+without the drift being visible.
+
+`site/` is gitignored; `uv run mkdocs build --strict` is clean, and the README documents it
+as the pre-commit check for documentation changes.
 
 #### Step 8.5 Phase 1 — the producer: diagnostics defects, and a metadata sidecar
 

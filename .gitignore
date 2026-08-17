@@ -40,6 +40,9 @@ build/
 .ruff_cache/
 .mypy_cache/
 
+# rendered documentation (mkdocs build output; the sources live in docs/)
+site/
+
 # ...but the test golden fixtures ARE source, not generated output: they hold
 # reference values captured from the pre-refactor solver and the regression
 # suite fails to even import without them (see tests/test_pde_regression.py).

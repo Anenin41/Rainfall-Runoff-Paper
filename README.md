@@ -252,9 +252,20 @@ uv add <package>
 uv add --group dev <package>
 ```
 
-Once [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) Step 9 lands, a documentation site will
-be available via `uv sync --group docs` then `uv run mkdocs serve` (local preview) /
-`uv run mkdocs build`.
+## Documentation
+
+A documentation site covers the model, the numerical method, every configuration key, the
+report generator, and the measured limitations, plus an API reference generated from the
+docstrings. Sources live in [`docs/`](docs/).
+
+```bash
+uv sync --group docs
+uv run mkdocs serve    # local preview at http://127.0.0.1:8000
+uv run mkdocs build    # render to site/ (gitignored)
+```
+
+`mkdocs build --strict` treats warnings as errors, including broken links and malformed
+docstrings, so it is worth running before committing documentation changes.
 
 ## Status
 

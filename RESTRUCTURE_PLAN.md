@@ -17,8 +17,7 @@ changes, update the relevant section rather than silently diverging from it.
 
 ## Status
 
-**Steps 0–8 complete. Step 8.5 is under way: Phase 1 (producer) done, Phases 2–3 (the report
-itself) next.** 632 tests pass.
+**Steps 0–8.5 complete. Step 9 (documentation site) is next.** 685 tests pass.
 
 | Step | Scope | Status |
 |:--|:--|:--|
@@ -34,7 +33,7 @@ itself) next.** 632 tests pass.
 | 6 | Wet-dry treatment | Done |
 | 7 | CLI rewrite (`cli.py`, YAML config) | Done |
 | 8 | Cleanup (dead code, stale docs, `purge` tool) | Done |
-| 8.5 | In-package post-processing suite (PDF run reports) | Phase 1 done |
+| 8.5 | In-package post-processing suite (PDF run reports) | Done |
 | 9 | Documentation site (mkdocs) | Pending |
 
 **Where the code stands.** The solver runs entirely on the arbitrary-N generic engine —
@@ -698,8 +697,7 @@ Also fixed: a stale `main.py` reference in `run_thesis_configs.sh` that was insi
 
 - [x] **Step 7 — CLI rewrite.** Done; see the entry above.
 - [x] **Step 8 — cleanup.** Done; see the entry above.
-- [ ] **Step 8.5 — post-processing suite.** Phase 1 done; see the entry below and the design
-      that follows it.
+- [x] **Step 8.5 — post-processing suite.** Done in three phases; see the entries above.
 - [ ] **Step 9 — documentation site.** `mkdocs` + `mkdocs-material` + `mkdocstrings` (the
       `docs` dependency group already exists). `mkdocs.yml` at repo root and a `docs/` tree:
       index, quick start, model overview (adapted from §1–§3), configuration reference, and
@@ -821,6 +819,44 @@ PDF per run across twenty runs.
 (suite 632 → **675**). Byte-identity re-confirmed against `results/`. End to end,
 `moment-sw-report results/Dry_Wet_Test` reports on all four runs of a nested case family in one
 invocation.
+
+#### Step 8.5 Phase 3 — hyperbolicity, presented so it cannot be misread
+
+Two pages: an overview carrying the scheme counters and the model-level summary, and a
+space-time page with the per-cell spectrum. Between them they replace the seven plots
+`processing/plotter.py` carried and **never once executed** — every toggle was false and every
+`*_hyperbolicity_*.csv` on disk is empty — so they were treated as new code, not a port.
+
+**`recompute_summary` is the load-bearing piece, and it is needed permanently.** Phase 1 fixed
+D3 and D4 in the producer, but a fix is not retroactive: every hyperbolicity CSV already in
+`results/` keeps a NaN-latched worst cell and a non-hyperbolic count that includes dry cells. So
+the report derives its own numbers from the per-cell frame whenever it has one. That needs
+nothing new on disk — a cell that was never evaluated is exactly a row whose `max_abs_imag_eig`
+is NaN, which holds in both the old and new formats — and it is verified to reproduce the Phase
+1 producer's counts exactly, and to give the *same* answer from a legacy per-cell file whose
+`is_hyperbolic` column claims 9 bad cells where the honest count is 1. When only a summary
+survives, its numbers are shown but explicitly labelled as uncorrectable, naming D3 and D4.
+
+**Two tiers, never merged into one number.** Tier 1 is prose, not a figure: it names the scheme
+and its recording semantics (Roe one path average per interface; Osher five weight-scaled node
+matrices, hence counts and magnitudes not comparable to Roe's and the fixed tolerance up to 8.4×
+stricter in `A`-units; LF/PRICE never eigendecompose, so their zero is an absence of measurement,
+stated in those words). With no sidecar the counters are **not printed at all**, since they
+cannot be interpreted without the scheme. Tier 2 reports the model's own spectrum, counting dry
+cells as a separate series everywhere they appear. Tests assert the rendered text never contains
+"all clear" and never renders "0 of 0".
+
+**The panels.** Overview: largest `|Im λ|` per step against the tolerance, affected cells split
+by population, fraction over *evaluated* cells only, and where the worst cell sits. Maps:
+space-time magnitude (floored then log-scaled, with a caption saying blank cells were never
+evaluated rather than zero), a three-state classification, and profiles at the first step, the
+worst spectrum and the first loss. `pivot_table` throughout, not `pivot`, which raises outright
+on a duplicated `(time, x)` pair.
+
+**Validation.** 10 further tests (suite 675 → **685**), including the mix the plan specified — 8
+dry, 1 genuinely complex, 31 clean, where the recomputation reports 8 and 1 while the legacy
+flag column says 9 — and a synthetic genuine-loss run, since every thesis run is clean (14.4M
+states, zero loss) and the "we found something" path could otherwise never be exercised.
 
 #### Step 8.5 design — an in-package post-processing suite
 

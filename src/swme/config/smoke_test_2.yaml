@@ -1,0 +1,39 @@
+pde:
+  type: HSWME1D
+  initial_condition: damBreak_dryBed_partial
+  viscosity: 0.0
+  slip_length: 1.0
+  linear_source: false
+  hyperbolic: true
+
+grid:
+  x1: -1.0
+  x2: 1.0
+  resolution_x: 200
+
+numerics:
+  order: 1
+  method: classical
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: INFLOW_OUTFLOW
+  t_end: 0.2
+
+topography:
+  bed_profile: gaussian_bump
+  amplitude: 0.2
+  center: 0.0
+  width: 0.2
+  reference_water_level: 1.0
+
+wet_dry:
+  eps_div: 1.0e-14
+  h_dry: 1.0e-10
+  h_wet: 1.0e-9
+
+postprocessing:
+  store_history: true
+  history_stride: 1
+  store_hyperbolicity: true
+  hyperbolicity_stride: 1

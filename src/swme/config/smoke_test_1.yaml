@@ -1,0 +1,56 @@
+# Smoke test: exercises RechargeSWME1D (rainfall + Horton infiltration +
+# admissible mixing friction), the HSWME hyperbolic closure, well-balanced
+# topography coupling (Roe), and the hyperbolicity diagnostic, all in one run.
+#
+# NOTE: h never drops below 1.0 under horton_moment_order_pulse, so the
+# wet_dry engine is present but not meaningfully triggered here (see below).
+# NOTE: no shipped thesis config pairs topography with RechargeSWME1D, so the
+# well-balancing property is untested territory for this combination.
+
+pde:
+  type: RechargeSWME1D
+  initial_condition: horton_moment_order_pulse
+  viscosity: 1.0e-3
+  slip_length: 1.0
+  linear_source: false
+  hyperbolic: true          # HSWME closure, tests the hyperbolicity engine
+  mixing_friction_model: admissible
+  alpha_R: 1.0              # mixing-friction coefficient for rainfall (f_R)
+  alpha_I: 0.5              # mixing-friction coefficient for infiltration (f_I)
+  rainfall_rate: 0.2        # R
+  infiltration_type: horton
+  horton_f0: 0.24
+  horton_fc: 0.14
+  horton_k: 1.0
+
+grid:
+  x1: 0.0
+  x2: 1.0
+  resolution_x: 200
+
+numerics:
+  order: 2                  # N=2; horton_moment_order_pulse supports N in {0,1,2}
+  method: classical
+  fvm_type: PVM
+  pvm: Roe                  # required for well-balancing over topography
+  time_integrator: ExplicitEuler
+  boundary_condition: INFLOW_OUTFLOW
+  t_end: 1.0
+
+topography:
+  bed_profile: gaussian_bump
+  amplitude: 0.1            # kept small since
+  center: 0.5
+  width: 0.1
+  reference_water_level: 1.0
+
+wet_dry:
+  eps_div: 1.0e-14
+  h_dry: 1.0e-4
+  h_wet: 1.0e-3
+
+postprocessing:
+  store_history: true
+  history_stride: 1
+  store_hyperbolicity: true
+  hyperbolicity_stride: 1

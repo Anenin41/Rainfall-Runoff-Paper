@@ -284,6 +284,16 @@ class ClassicalSimulation1D(Simulation):
         Returns
         -------
         None
+
+        Notes
+        -----
+        Cells fall into three populations and are counted separately in the
+        summary: `num_nonhyperbolic_cells` (a finite spectrum that left the
+        real axis - the only one that says anything about the model),
+        `num_dry_cells` (h <= h_dry, no spectrum evaluated) and
+        `num_failed_cells` (the eigensolve raised). Not-evaluated cells carry
+        NaN in `is_hyperbolic` and `max_abs_imag_eig` in the per-cell rows, so
+        the two files agree about which cells were skipped.
         """
         # Check if the user wants a hyperbolicity check
         if not self.store_hyperbolicity:
@@ -293,8 +303,18 @@ class ClassicalSimulation1D(Simulation):
         if step % self.hyperbolicity_stride != 0:
             return
 
-        # Initialize util variables to store diagnostics
+        # Initialize util variables to store diagnostics.
+        #
+        # Three populations are counted separately rather than lumped into one
+        # "bad" total (RESTRUCTURE_PLAN.md Step 8.5, defect D4). A dry cell has
+        # no spectrum to speak of - its moments have been ramped away - and a
+        # cell whose eigensolve raised is a numerical failure, not a statement
+        # about the model. Conflating either with a genuinely complex spectrum
+        # undoes exactly the distinction Step 6 exists to draw, and on a wet-dry
+        # run the dry population is large, not marginal.
         n_bad = 0
+        n_dry = 0
+        n_failed = 0
         max_abs_imag_global = -1.0
         worst_cell_index = -1
         worst_x = np.nan
@@ -322,7 +342,11 @@ class ClassicalSimulation1D(Simulation):
                 max_abs_imag = np.nan
                 min_real = np.nan
                 max_real = np.nan
-                is_hyperbolic = 0
+                # NaN, not 0: "not evaluated" is a different claim from "the
+                # spectrum left the real axis", and writing 0 here made the
+                # per-cell file assert the second when it meant the first.
+                is_hyperbolic = np.nan
+                n_dry += 1
             else:
                 try:
                     A = self.pde_type.compute_system_matrix(self.order, local_values)
@@ -335,10 +359,12 @@ class ClassicalSimulation1D(Simulation):
                     min_real = float(np.min(real_parts))
                     max_real = float(np.max(real_parts))
 
-                    is_hyperbolic = int(
+                    is_hyperbolic = float(
                         np.isfinite(max_abs_imag) and
                         max_abs_imag < self.hyperbolicity_tol
                     )
+                    if not is_hyperbolic:
+                        n_bad += 1
                 except Exception as e:
                     print("\n[hyperbolicity-check exception]")
                     print(f"step        = {step}")
@@ -354,12 +380,17 @@ class ClassicalSimulation1D(Simulation):
                     max_abs_imag = np.nan
                     min_real = np.nan
                     max_real = np.nan
-                    is_hyperbolic = 0
-    
-            if not is_hyperbolic: 
-                n_bad += 1
+                    is_hyperbolic = np.nan
+                    n_failed += 1
 
-            if np.isnan(max_abs_imag) or max_abs_imag > max_abs_imag_global:
+            # Only a *finite* spectrum can be the worst one (defect D3). The
+            # previous condition was `np.isnan(max_abs_imag) or max_abs_imag >
+            # max_abs_imag_global`, which latched: the first dry cell set the
+            # running max to NaN, and from then on every comparison against NaN
+            # was False, so a genuinely non-hyperbolic wet cell later in the
+            # sweep became invisible and worst_cell_index reported the last dry
+            # cell in index order rather than the worst spectrum.
+            if np.isfinite(max_abs_imag) and max_abs_imag > max_abs_imag_global:
                 max_abs_imag_global = max_abs_imag
                 worst_cell_index = i - 1
                 worst_x = x_i
@@ -380,22 +411,37 @@ class ClassicalSimulation1D(Simulation):
             })
 
         if worst_eigenvals is None:
+            # No cell in this step had a finite spectrum, so there is no worst
+            # one. Report that as missing rather than as the -1.0 sentinel,
+            # which would read as a real (and impossible) magnitude.
             worst_eigvals_real = ""
             worst_eigvals_imag = ""
-        else: 
+            max_abs_imag_reported = np.nan
+        else:
             worst_eigvals_real = ";".join(
                 [f"{val:.16e}" for val in np.real(worst_eigenvals)]
             )
             worst_eigvals_imag = ";".join(
                 [f"{val:.16e}" for val in np.imag(worst_eigenvals)]
             )
+            max_abs_imag_reported = max_abs_imag_global
+
+        n_evaluated = self.mesh.resolution - n_dry - n_failed
 
         self.hyperbolicity_summary.append({
             "step": step,
             "time": time,
             "num_nonhyperbolic_cells": n_bad,
-            "fraction_nonhyperbolic_cells": n_bad / self.mesh.resolution,
-            "max_abs_imag_eig": max_abs_imag_global,
+            # Denominator is the cells actually evaluated, not every cell in
+            # the mesh: a run that is 90% dry would otherwise report a
+            # reassuringly small fraction for the handful of wet cells that
+            # genuinely lost hyperbolicity.
+            "fraction_nonhyperbolic_cells": (
+                n_bad / n_evaluated if n_evaluated else np.nan),
+            "num_dry_cells": n_dry,
+            "num_failed_cells": n_failed,
+            "num_evaluated_cells": n_evaluated,
+            "max_abs_imag_eig": max_abs_imag_reported,
             "worst_cell_index": worst_cell_index,
             "worst_x": worst_x,
             "worst_eigvals_real": worst_eigvals_real,
@@ -716,9 +762,13 @@ class ClassicalSimulation1D(Simulation):
                                 'nonhyperbolic_count', 0)
         if nonhyperbolic:
             examined = self.spatial_discretization.spectra_examined
+            # "spectra", not "interfaces": Roe records one path-averaged matrix
+            # per interface, but Osher records five - one weight-scaled matrix
+            # per quadrature node - so calling the denominator an interface
+            # count was wrong by 5x for Osher (Step 8.5, defect D5).
             warnings.warn(
-                f"Complex spectra at {nonhyperbolic} of {examined} interfaces "
-                f"(largest |Im(lambda)| = "
+                f"Complex spectra at {nonhyperbolic} of {examined} recorded "
+                f"spectra (largest |Im(lambda)| = "
                 f"{self.spatial_discretization.max_abs_imaginary_eigenvalue:.3e}"
                 "). This is the path-averaged interface matrix, which can "
                 "leave the real axis at a strong jump - a wet-dry front does "

@@ -30,8 +30,10 @@ a config carried over from the INI era reproduces its results bit for bit.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import timeit
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -404,6 +406,47 @@ def build_time_integration(config: dict):
     return timeIntegration.Exact()
 
 
+def build_simulation(config: dict, *, verbose: bool = False):
+    """Build a ready-to-run simulation from an already-parsed config.
+
+    Split out of `run()` so a caller - a test, a notebook - can get a real
+    simulation object without also acquiring `run()`'s output directory,
+    CSV writing and console printing. `run()` is now this plus I/O.
+    """
+    numerics = _section(config, 'numerics', required=True)
+    postprocessing = _section(config, 'postprocessing')
+
+    _choice(numerics, 'numerics', 'method', {'classical'}, 'classical')
+    boundary_condition = _choice(
+        numerics, 'numerics', 'boundary_condition',
+        {'PERIODIC', 'INFLOW_OUTFLOW'})
+    order = _integer(numerics, 'numerics', 'order')
+
+    _topography = build_topography(config)
+    _wet_dry = build_wet_dry(config)
+    _pde = build_pde(config, _topography, _wet_dry)
+    _mesh = build_mesh(config, _topography, boundary_condition)
+
+    _simulation = simulation.ClassicalSimulation1D(
+        order, _pde, _mesh, boundary_condition,
+        _text(_section(config, 'pde'), 'pde', 'initial_condition'),
+        build_scheme(config), build_time_integration(config),
+    )
+
+    # Diagnostics capture, for every model rather than recharge only.
+    _simulation.verbose = verbose
+    _simulation.store_history = _boolean(
+        postprocessing, 'postprocessing', 'store_history', True)
+    _simulation.store_hyperbolicity = _boolean(
+        postprocessing, 'postprocessing', 'store_hyperbolicity', False)
+    _simulation.history_stride = _integer(
+        postprocessing, 'postprocessing', 'history_stride', 1)
+    _simulation.hyperbolicity_stride = _integer(
+        postprocessing, 'postprocessing', 'hyperbolicity_stride', 1)
+
+    return _simulation
+
+
 def build_mesh(config: dict, topography, boundary_condition):
     grid = _section(config, 'grid', required=True)
     _mesh = mesh.UniformRectangularMesh1D(
@@ -443,8 +486,108 @@ def _output_prefix(output_dir: str, model: str, hyperbolic: bool, order: int,
     return os.path.join(output_dir, f"{tag}_N{order}")
 
 
-def write_outputs(sim, data_array, output_dir: str, prefix: str, order: int) -> None:
-    """Write the run's CSVs.
+SIDECAR_SCHEMA = 1
+
+
+def build_run_metadata(sim, config: dict, *, config_name=None, config_path=None,
+                       elapsed_seconds=None) -> dict:
+    """The `{prefix}_run.json` sidecar: what this run actually did.
+
+    The CSVs carry only `[x, h, u_m, a1..aN]`, which leaves a report rebuilt
+    from disk unable to say which flux scheme produced them or what the bed
+    looked like. Those are not cosmetic gaps: the interface-matrix
+    hyperbolicity counters are uninterpretable without the scheme name (Roe
+    records one path average per interface, Osher five weight-scaled node
+    matrices, LF and PRICE none at all), and the topography page has no bed to
+    draw. Rather than widen the CSVs - which would break byte-comparison
+    against every result already in `results/` - this records the run
+    alongside them, additively.
+
+    It is deliberately a record of the *run*, not a copy of the config: the
+    config on disk can be edited afterwards, and `--output-dir` means the
+    config-to-directory mapping cannot be inverted anyway.
+
+    The bed is stored as a profile name plus its parameters rather than a
+    sampled array. `topography.get_bed_profile(name, **params)` evaluated at
+    the CSV's `x` column reproduces `mesh.set_bed_elevation` exactly, because
+    both sample `mesh.cell_center_positions` - and `TopographySettings`
+    carries a closure, which is not serialisable.
+    """
+    pde_section = _section(config, 'pde', required=True)
+    numerics = _section(config, 'numerics', required=True)
+    grid = _section(config, 'grid', required=True)
+    topography_section = config.get('topography') or {}
+
+    _pde = sim.pde_type
+    _mesh = sim.mesh
+    scheme = sim.spatial_discretization
+    wet_dry = getattr(_pde, 'wet_dry', None)
+
+    metadata = {
+        'schema': SIDECAR_SCHEMA,
+        'config_name': config_name,
+        'config_path': str(config_path) if config_path is not None else None,
+        'model': _text(pde_section, 'pde', 'type'),
+        'hyperbolic': bool(getattr(_pde, 'hyperbolic', False)),
+        'order': int(sim.order),
+        'resolution': int(_mesh.resolution),
+        'domain': [float(_mesh.boundaries[0]), float(_mesh.boundaries[1])],
+        'initial_condition': sim.initial_condition,
+        'boundary_condition': sim.boundary_condition,
+        'scheme': type(scheme).__name__,
+        'fvm_type': _text(numerics, 'numerics', 'fvm_type', 'PVM'),
+        'time_integrator': type(sim.time_integration).__name__,
+        'scheme_well_balanced': bool(getattr(scheme, 'well_balanced', False)),
+        'scheme_viscosity_depends_on_timestep': bool(
+            getattr(scheme, 'viscosity_depends_on_timestep', False)),
+        'viscosity': _number(pde_section, 'pde', 'viscosity'),
+        'slip_length': _number(pde_section, 'pde', 'slip_length'),
+        't_end': _number(numerics, 'numerics', 't_end'),
+        'elapsed_seconds': elapsed_seconds,
+        'store_history': bool(sim.store_history),
+        'history_stride': int(sim.history_stride),
+        'store_hyperbolicity': bool(sim.store_hyperbolicity),
+        'hyperbolicity_stride': int(sim.hyperbolicity_stride),
+        'hyperbolicity_tol': float(sim.hyperbolicity_tol),
+        # End-of-run scheme counters. Recorded even when zero, because a zero
+        # means different things per scheme and the report has to be able to
+        # tell them apart (LF/PRICE never eigendecompose at all).
+        'scheme_counters': {
+            'spectra_examined': int(getattr(scheme, 'spectra_examined', 0)),
+            'nonhyperbolic_count': int(getattr(scheme, 'nonhyperbolic_count', 0)),
+            'max_abs_imaginary_eigenvalue': float(
+                getattr(scheme, 'max_abs_imaginary_eigenvalue', 0.0)),
+            'tolerance': float(getattr(scheme, 'hyperbolicity_tolerance', 0.0)),
+        },
+        'mass_created_by_clamping': float(
+            getattr(sim, 'mass_created_by_clamping', 0.0)),
+        'grid': {key: _number(grid, 'grid', key)
+                 for key in ('x1', 'x2') if key in grid},
+        'bed_profile': topography_section.get('bed_profile') if topography_section else None,
+        'bed_params': {
+            key: _number(topography_section, 'topography', key)
+            for key in topography_section if key not in _TOPOGRAPHY_RESERVED
+        } if topography_section else {},
+        'reference_water_level': (
+            _number(topography_section, 'topography', 'reference_water_level', 1.0)
+            if topography_section else None),
+        'has_topography': bool(_mesh.has_topography),
+        'wet_dry': ({'eps_div': wet_dry.eps_div, 'h_dry': wet_dry.h_dry,
+                     'h_wet': wet_dry.h_wet} if wet_dry is not None else None),
+        'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+    }
+
+    if metadata['model'] == 'RechargeSWME1D':
+        metadata['infiltration_type'] = _text(
+            pde_section, 'pde', 'infiltration_type', 'horton').lower()
+        metadata['rainfall_rate'] = _number(pde_section, 'pde', 'rainfall_rate')
+
+    return metadata
+
+
+def write_outputs(sim, data_array, output_dir: str, prefix: str, order: int,
+                  metadata: dict | None = None) -> None:
+    """Write the run's CSVs, and the metadata sidecar when one is supplied.
 
     Model-agnostic since Step 7: this used to sit inside the RechargeSWME1D
     branch, so a plain SWME1D/HSWME1D run produced nothing at all.
@@ -492,12 +635,22 @@ def write_outputs(sim, data_array, output_dir: str, prefix: str, order: int) -> 
     # inside the history block meant store_hyperbolicity without store_history
     # silently wrote nothing, while the common default wrote two empty files on
     # every run (RESTRUCTURE_PLAN.md Step 8.5, defect D2).
+    #
+    # Named from `prefix` like the other three (defect D6). They used to carry a
+    # hardcoded `recharge_` stem, so a plain SWME run wrote files claiming to be
+    # recharge output, and two models sharing an output directory collided on
+    # them even though their other CSVs did not.
     if getattr(sim, "hyperbolicity_history", None):
         pd.DataFrame(sim.hyperbolicity_history).to_csv(
-            os.path.join(output_dir, "recharge_hyperbolicity_history.csv"), index=False)
+            f"{prefix}_hyperbolicity_history.csv", index=False)
     if getattr(sim, "hyperbolicity_summary", None):
         pd.DataFrame(sim.hyperbolicity_summary).to_csv(
-            os.path.join(output_dir, "recharge_hyperbolicity_summary.csv"), index=False)
+            f"{prefix}_hyperbolicity_summary.csv", index=False)
+
+    if metadata is not None:
+        with open(f"{prefix}_run.json", 'w', encoding='utf-8') as handle:
+            json.dump(metadata, handle, indent=2, sort_keys=False)
+            handle.write("\n")
 
 
 # --------------------------------------------------------------------------
@@ -560,11 +713,6 @@ def run(config=None, *, output_dir=None, plot=False, verbose=False):
 
     numerics = _section(config, 'numerics', required=True)
     postprocessing = _section(config, 'postprocessing')
-
-    method = _choice(numerics, 'numerics', 'method', {'classical'}, 'classical')
-    boundary_condition = _choice(
-        numerics, 'numerics', 'boundary_condition',
-        {'PERIODIC', 'INFLOW_OUTFLOW'})
     order = _integer(numerics, 'numerics', 'order')
     t_end = _number(numerics, 'numerics', 't_end')
 
@@ -579,31 +727,13 @@ def run(config=None, *, output_dir=None, plot=False, verbose=False):
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    _topography = build_topography(config)
-    _wet_dry = build_wet_dry(config)
-    _pde = build_pde(config, _topography, _wet_dry)
-    _mesh = build_mesh(config, _topography, boundary_condition)
+    _simulation = build_simulation(config, verbose=verbose)
+    _mesh = _simulation.mesh
+    _pde = _simulation.pde_type
 
     if _mesh.has_topography:
         print(f"topography: {config['topography'].get('bed_profile', 'flat')}, "
               f"Z in [{_mesh.bed_elevation.min():.6g}, {_mesh.bed_elevation.max():.6g}]")
-
-    _simulation = simulation.ClassicalSimulation1D(
-        order, _pde, _mesh, boundary_condition,
-        _text(_section(config, 'pde'), 'pde', 'initial_condition'),
-        build_scheme(config), build_time_integration(config),
-    )
-
-    # Diagnostics capture, for every model rather than recharge only.
-    _simulation.verbose = verbose
-    _simulation.store_history = _boolean(
-        postprocessing, 'postprocessing', 'store_history', True)
-    _simulation.store_hyperbolicity = _boolean(
-        postprocessing, 'postprocessing', 'store_hyperbolicity', False)
-    _simulation.history_stride = _integer(
-        postprocessing, 'postprocessing', 'history_stride', 1)
-    _simulation.hyperbolicity_stride = _integer(
-        postprocessing, 'postprocessing', 'hyperbolicity_stride', 1)
 
     start = timeit.default_timer()
     data_array = _simulation.run_simulation(t_end)
@@ -616,7 +746,10 @@ def run(config=None, *, output_dir=None, plot=False, verbose=False):
             _section(config, 'pde'), 'pde', 'infiltration_type', 'horton').lower()
     prefix = _output_prefix(
         output_dir, model, _pde.hyperbolic, order, infiltration_type)
-    write_outputs(_simulation, data_array, output_dir, prefix, order)
+    metadata = build_run_metadata(
+        _simulation, config, config_name=config_path.stem,
+        config_path=config_path, elapsed_seconds=elapsed)
+    write_outputs(_simulation, data_array, output_dir, prefix, order, metadata)
 
     print(f"Time: {elapsed}")
     print(f"model: {model}, hyperbolic: {_pde.hyperbolic}, N: {order}")

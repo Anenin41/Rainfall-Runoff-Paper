@@ -17,7 +17,8 @@ changes, update the relevant section rather than silently diverging from it.
 
 ## Status
 
-**Steps 0–8 complete. Step 8.5 (post-processing suite) is next.** 620 tests pass.
+**Steps 0–8 complete. Step 8.5 is under way: Phase 1 (producer) done, Phases 2–3 (the report
+itself) next.** 632 tests pass.
 
 | Step | Scope | Status |
 |:--|:--|:--|
@@ -33,7 +34,7 @@ changes, update the relevant section rather than silently diverging from it.
 | 6 | Wet-dry treatment | Done |
 | 7 | CLI rewrite (`cli.py`, YAML config) | Done |
 | 8 | Cleanup (dead code, stale docs, `purge` tool) | Done |
-| 8.5 | In-package post-processing suite (PDF run reports) | Pending |
+| 8.5 | In-package post-processing suite (PDF run reports) | Phase 1 done |
 | 9 | Documentation site (mkdocs) | Pending |
 
 **Where the code stands.** The solver runs entirely on the arbitrary-N generic engine —
@@ -697,12 +698,69 @@ Also fixed: a stale `main.py` reference in `run_thesis_configs.sh` that was insi
 
 - [x] **Step 7 — CLI rewrite.** Done; see the entry above.
 - [x] **Step 8 — cleanup.** Done; see the entry above.
-- [ ] **Step 8.5 — post-processing suite.** See the design below.
+- [ ] **Step 8.5 — post-processing suite.** Phase 1 done; see the entry below and the design
+      that follows it.
 - [ ] **Step 9 — documentation site.** `mkdocs` + `mkdocs-material` + `mkdocstrings` (the
       `docs` dependency group already exists). `mkdocs.yml` at repo root and a `docs/` tree:
       index, quick start, model overview (adapted from §1–§3), configuration reference, and
       an API reference generated from docstrings. Do this *after* Steps 7–8.5 so the docs
       describe the final structure.
+
+#### Step 8.5 Phase 1 — the producer: diagnostics defects, and a metadata sidecar
+
+Step 8.5 lands in three phases: the producer first, then the report skeleton, then
+hyperbolicity. Defects before consumers, because **these code paths had never executed** —
+`store_hyperbolicity` is false in all 20 shipped configs and every `*_hyperbolicity_*.csv` on
+disk was 1 byte — so building the report on them first would have meant debugging first-run
+producer code and new rendering code simultaneously.
+
+**D4 was worse than the plan estimated, and the measurement is the point.** The first real
+`store_hyperbolicity = True` run in this project's history — a dam break onto a dry bed, N=1,
+200 cells — would have reported **100 of 200 cells non-hyperbolic at t = 0**, falling to 65 by
+t = 0.195. Every one of them was a *dry* cell. N=1 SWME is unconditionally hyperbolic (§6: the
+spectrum is exactly `{u_m, u_m ± sqrt(g·h + alpha_1²)}`), so that is a **100% false positive
+rate**, and it is the same failure mode as the `ComplexWarning` of Step 5.5 and the
+interface-counter warning of Step 6 — the third time this project has caught a diagnostic
+blaming the model for the wet-dry treatment. The summary now separates
+`num_nonhyperbolic_cells` (0 here, correctly) from `num_dry_cells`, `num_failed_cells` and
+`num_evaluated_cells`, and `fraction_nonhyperbolic_cells` divides by cells actually evaluated —
+otherwise a 90%-dry run reports a reassuringly small fraction for the few wet cells that
+genuinely broke.
+
+**D3 confirmed on the same run.** `max_abs_imag_eig` was NaN at every step and
+`worst_cell_index` was 199 — the last dry cell in index order — because
+`if np.isnan(max_abs_imag) or ...` latched the running maximum to NaN, after which every
+comparison was False. It now tracks the worst *finite* spectrum: 0.0 exactly, at cell 0, a wet
+cell. Per-cell rows carry NaN rather than 0 in `is_hyperbolic` for cells that were never
+evaluated, so the two files agree about what was skipped.
+
+**D6, found during the audit.** The two hyperbolicity CSVs carried a hardcoded `recharge_`
+stem, ignoring the run's `prefix` unlike the other three files — so a plain SWME run wrote
+files claiming to be recharge output, and two models sharing an output directory overwrote each
+other's. Also fixed: the end-of-run warning called `spectra_examined` a count of "interfaces",
+which is wrong by 5× for Osher (one line of D5; the rest is a presentation requirement for the
+report).
+
+**`{prefix}_run.json`, a metadata sidecar.** The CSVs carry only `[x, h, u_m, a_1..a_N]`, which
+leaves a report rebuilt from disk unable to name the flux scheme or draw the bed. Neither gap is
+cosmetic: the interface counters are uninterpretable without the scheme (Roe records one path
+average per interface, Osher five weight-scaled node matrices, LF/PRICE none), and the
+topography page has no bed at all. Widening the CSVs would have broken byte-comparison against
+every result in `results/`, so this sits *beside* them. It records the run rather than copying
+the config — a config can be edited afterwards, and `--output-dir` means the config-to-directory
+map cannot be inverted anyway. The bed is stored as a profile name plus parameters, not a
+sampled array: `TopographySettings` carries a closure that will not serialise, and
+`get_bed_profile(name, **params)` at the CSV's own `x` reproduces the mesh's sampling to
+round-off (~3e-16; `x` itself loses ~1 ULP through the CSV).
+
+**`build_simulation` split out of `run()`**, so a caller can get a real simulation object
+without also acquiring an output directory, CSV writing and console printing.
+
+**Validation.** `tests/test_diagnostics.py`, 12 tests (suite 620 → **632**). Byte-identity
+re-confirmed against `results/` on both a recharge case (`Ersoy/ErsoyData0`) and the wet-dry
+thesis case (`Dry_Wet_Test/Dry_N1`) — all CSVs identical, which is what makes this safe: every
+path touched is either skipped entirely when `store_hyperbolicity` is false, or writes a file
+that was empty on disk.
 
 #### Step 8.5 design — an in-package post-processing suite
 
@@ -762,27 +820,37 @@ implied all-clear.
 `<output-dir>/report.pdf`; a new `moment-sw-report <dir>` console script rebuilds one from
 CSVs, so the 20 existing thesis runs get reports without re-running anything.
 
-**Five defects must be fixed first — they are in the data the report would consume, and
-plotting them as-is yields a report that looks authoritative and is wrong:**
+**Six defects sit in the data the report would consume**, and plotting them as-is yields a
+report that looks authoritative and is wrong. D1 and D2 were fixed early, in Step 7; D3, D4
+and D6 are fixed in Phase 1 of this step; D5 is a presentation requirement rather than a code
+change, and lands with the hyperbolicity page.
 
-- **D1** — `main.py` sets `store_history`/`store_hyperbolicity` and writes *all* CSVs only
-  inside the `RechargeSWME1D` branch, so the three non-recharge configs
-  (`topography_lake_at_rest`, `topography_perturbed_lake`, `wetdry_dam_break`) capture
-  nothing at all. Lift both out of that branch.
-- **D2** — the hyperbolicity CSVs are written *nested inside* `if len(history) > 0`, so
-  `store_hyperbolicity=True` with `store_history=False` writes nothing, while the shipped
-  default writes two empty files on every run. Gate each on its own list.
-- **D3** — `simulation.py`'s worst-cell tracker reads
+- **D1** *(fixed in Step 7)* — `main.py` set `store_history`/`store_hyperbolicity` and wrote
+  *all* CSVs only inside the `RechargeSWME1D` branch, so the three non-recharge configs
+  (`topography_lake_at_rest`, `topography_perturbed_lake`, `wetdry_dam_break`) captured
+  nothing at all.
+- **D2** *(fixed in Step 7)* — the hyperbolicity CSVs were written *nested inside*
+  `if len(history) > 0`, so `store_hyperbolicity=True` with `store_history=False` wrote
+  nothing, while the shipped default wrote two empty files on every run. Each is now gated on
+  its own list.
+- **D3** — `simulation.py`'s worst-cell tracker read
   `if np.isnan(max_abs_imag) or max_abs_imag > max_abs_imag_global`. Once a dry or failed
-  cell sets the running max to NaN it latches: `max_abs_imag_eig` stays NaN for that step and
-  `worst_cell_index`/`worst_x` point at the last NaN cell, not the worst spectrum.
-- **D4** — dry cells get `is_hyperbolic = 0`, so they inflate `num_nonhyperbolic_cells`.
+  cell set the running max to NaN it latched: `max_abs_imag_eig` stayed NaN for that step and
+  `worst_cell_index`/`worst_x` pointed at the last NaN cell, not the worst spectrum.
+- **D4** — dry cells got `is_hyperbolic = 0`, so they inflated `num_nonhyperbolic_cells`.
   On a wet-dry run that conflates "dry" with "ill-posed", the two things Step 6 worked
-  hardest to separate. Count them separately.
-- **D5** (labelling, not a fix) — `Osher` records 5× per interface on weight-scaled
+  hardest to separate.
+- **D5** (presentation, not a code fix) — `Osher` records 5× per interface on weight-scaled
   single-node matrices rather than the path average, and `LF`/`PRICE` never eigendecompose
-  at all, so their counters stay 0 — a vacuous zero, not a reassuring one. The report must
-  name the scheme and must never render "0 of 0" as an all-clear.
+  at all, so their counters stay 0 — a vacuous zero, not a reassuring one. Osher's
+  `max_abs_imaginary_eigenvalue` is scaled by its quadrature weights (0.118–0.284), so it is
+  not comparable to Roe's either, and the fixed `1e-10` threshold is up to 8.4× stricter in
+  `A`-units. The report must name the scheme and must never render "0 of 0" as an all-clear.
+  One line *was* a code fix: the end-of-run warning called `spectra_examined` a count of
+  "interfaces", which is wrong by 5× for Osher.
+- **D6** — the two hyperbolicity CSVs were written with a hardcoded `recharge_` stem,
+  ignoring the run's `prefix` unlike the other three files. A plain SWME run produced files
+  claiming to be recharge output, and two models sharing an output directory collided on them.
 
 **Validation.** `tests/test_report.py`, plus the first `tests/conftest.py` (forcing
 `matplotlib.use("Agg")` — there is currently no matplotlib anywhere in `tests/`). Cover: a

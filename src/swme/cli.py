@@ -683,6 +683,11 @@ def main(argv=None):
         help='Show the interactive summary figure when the run finishes. Off '
              'by default: it blocks until the window is closed, which is wrong '
              'for scripted runs.')
+    parser.add_argument(
+        '--report', action='store_true',
+        help='Write a multi-page PDF report to <output-dir>/report.pdf. Off by '
+             'default so a scripted run stays free of matplotlib; build one '
+             'later from the CSVs with `moment-sw-report <dir>`.')
     args = parser.parse_args(argv)
 
     if args.list_configs:
@@ -691,7 +696,7 @@ def main(argv=None):
         return None
 
     run(args.config, output_dir=args.output_dir, plot=args.plot,
-        verbose=args.verbose)
+        verbose=args.verbose, report=args.report)
 
     # Deliberately returns None. The console-script wrapper calls
     # `sys.exit(main())`, so returning the data array here would hand
@@ -701,7 +706,7 @@ def main(argv=None):
     return None
 
 
-def run(config=None, *, output_dir=None, plot=False, verbose=False):
+def run(config=None, *, output_dir=None, plot=False, verbose=False, report=False):
     """Build and run a simulation from a config, returning the final state.
 
     The importable counterpart to `main()`: same behaviour, but returns the
@@ -754,6 +759,17 @@ def run(config=None, *, output_dir=None, plot=False, verbose=False):
     print(f"Time: {elapsed}")
     print(f"model: {model}, hyperbolic: {_pde.hyperbolic}, N: {order}")
     print(f"output: {output_dir}")
+
+    if report:
+        # Same reasoning as --plot below: the report subpackage's rendering
+        # layer pulls in matplotlib, so it is resolved only when asked for.
+        from . import report as report_module
+        result = report_module.build_report(
+            report_module.from_simulation(_simulation, data_array,
+                                          metadata=metadata),
+            os.path.join(output_dir, 'report.pdf'),
+        )
+        print(f"report: {result.path} ({len(result.page_keys)} pages)")
 
     if plot:
         # Imported here, not at module scope: swme.plotting pulls in pyplot,

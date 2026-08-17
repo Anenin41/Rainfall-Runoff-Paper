@@ -277,7 +277,7 @@ class PDE(ABC):
         ----------
         order : int
             order of the moment model PDE (TODO: create MomentModel as a subclass of PDE)
-        initial condition : str
+        initial_condition : str
             name of the initial condition
         position : float (if 1D) or numpy 1D array of floats (2D)
             the physical position in which the initial values are computed

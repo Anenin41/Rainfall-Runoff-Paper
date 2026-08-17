@@ -73,16 +73,16 @@ class WetDryThresholds:
     measuring rather than guessing:
 
     * Too large and it truncates genuinely small depths. A vacuum front is the
-      sharp case, because the exact solution itself goes to zero there:
-      Ritter's h vanishes quadratically at the front, so the leading edge sits
-      below any fixed h_dry and gets slowed down. Measured on the standard dry
-      dam break at 800 cells, against an exact front speed of 2.0 -
-      h_dry = 1e-4 gives 1.758, 1e-8 gives 1.934, 1e-12 gives 1.984. The error
-      does not converge away under mesh refinement, because refining only
-      resolves more of the truncated region.
+        sharp case, because the exact solution itself goes to zero there:
+        Ritter's h vanishes quadratically at the front, so the leading edge
+        sits below any fixed h_dry and gets slowed down. Measured on the
+        standard dry dam break at 800 cells, against an exact front speed of
+        2.0 - h_dry = 1e-4 gives 1.758, 1e-8 gives 1.934, 1e-12 gives 1.984.
+        The error does not converge away under mesh refinement, because
+        refining only resolves more of the truncated region.
     * Too small and the friction terms it floors stop being bounded. `nu/h^2`
-      at h_dry = 1e-10 reaches nu*1e20, which is finite - so no isfinite check
-      catches it - and meaningless.
+        at h_dry = 1e-10 reaches nu*1e20, which is finite - so no isfinite
+        check catches it - and meaningless.
 
     So: put h_dry comfortably below the smallest depth the problem needs to
     resolve, then check that nu/h_dry^2 is still a sane number. An inviscid

@@ -442,6 +442,200 @@ def test_topography_page_appears_only_with_a_bed(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# hyperbolicity: recomputation and the maps page
+# ---------------------------------------------------------------------------
+
+def _cell_frame(magnitudes, *, step=0, time=0.0, legacy=False):
+    """A per-cell frame; `legacy=True` writes the pre-Phase-1 `is_hyperbolic`.
+
+    Before Step 8.5 a dry cell was written with `is_hyperbolic = 0`, asserting
+    that its spectrum left the real axis when in fact none was computed.
+    """
+    magnitudes = np.asarray(magnitudes, dtype=float)
+    evaluated = np.isfinite(magnitudes)
+    if legacy:
+        flag = np.where(evaluated & (magnitudes <= 1e-10), 1, 0)
+    else:
+        flag = np.where(evaluated, (magnitudes <= 1e-10).astype(float), np.nan)
+    return pd.DataFrame({
+        "step": step, "time": time,
+        "cell_index": np.arange(len(magnitudes)),
+        "x": np.linspace(-1.0, 1.0, len(magnitudes)),
+        "max_abs_imag_eig": magnitudes,
+        "is_hyperbolic": flag,
+    })
+
+
+def test_recompute_separates_dry_cells_from_genuine_loss():
+    """The D3/D4 recomputation, on the exact mix that used to be misreported:
+    8 dry cells, 1 genuinely complex, 31 clean."""
+    from swme.report import hyperbolicity as hyper
+
+    magnitudes = np.zeros(40)
+    magnitudes[:8] = np.nan          # dry / not evaluated
+    magnitudes[20] = 0.5             # genuine loss
+    derived = hyper.recompute_summary(_cell_frame(magnitudes))
+
+    row = derived.iloc[0]
+    assert row["num_not_evaluated_cells"] == 8
+    assert row["num_nonhyperbolic_cells"] == 1
+    assert row["num_evaluated_cells"] == 32
+    assert row["worst_cell_index"] == 20
+    assert row["max_abs_imag_eig"] == 0.5
+    # Denominator is evaluated cells, not the whole mesh.
+    assert row["fraction_nonhyperbolic_cells"] == pytest.approx(1 / 32)
+
+
+def test_recompute_is_correct_on_legacy_per_cell_files():
+    """The fixes are not retroactive: every per-cell CSV already in `results/`
+    keeps the old `is_hyperbolic = 0` for dry cells. The recomputation must
+    ignore that column and read the NaN magnitudes instead."""
+    from swme.report import hyperbolicity as hyper
+
+    magnitudes = np.zeros(40)
+    magnitudes[:8] = np.nan
+    magnitudes[20] = 0.5
+    legacy = hyper.recompute_summary(_cell_frame(magnitudes, legacy=True))
+    modern = hyper.recompute_summary(_cell_frame(magnitudes, legacy=False))
+
+    assert legacy.iloc[0]["num_nonhyperbolic_cells"] == 1
+    assert legacy.iloc[0]["num_not_evaluated_cells"] == 8
+    # The legacy flag column says 9 cells are "not hyperbolic"; the honest
+    # count is 1, and both formats must land on the same answer.
+    assert (_cell_frame(magnitudes, legacy=True)["is_hyperbolic"] == 0).sum() == 9
+    pd.testing.assert_frame_equal(legacy, modern)
+
+
+def test_worst_spectrum_is_not_hidden_by_a_preceding_dry_cell():
+    """The D3 ordering hazard: a bad cell sitting after a NaN one."""
+    from swme.report import hyperbolicity as hyper
+
+    magnitudes = np.array([0.0, np.nan, 0.5, np.nan, 0.1])
+    row = hyper.recompute_summary(_cell_frame(magnitudes)).iloc[0]
+
+    assert row["worst_cell_index"] == 2
+    assert row["max_abs_imag_eig"] == 0.5
+
+
+def test_all_dry_step_reports_no_worst_cell():
+    from swme.report import hyperbolicity as hyper
+
+    row = hyper.recompute_summary(_cell_frame([np.nan] * 6)).iloc[0]
+
+    assert row["num_evaluated_cells"] == 0
+    assert row["worst_cell_index"] == -1
+    assert np.isnan(row["max_abs_imag_eig"])
+
+
+def test_worst_time_survives_a_nan_poisoned_column():
+    """A legacy summary has NaN in `max_abs_imag_eig` at every step containing a
+    dry cell; `idxmax` would pick the wrong row in silence."""
+    from swme.report import hyperbolicity as hyper
+
+    summary = pd.DataFrame({
+        "time": [0.0, 1.0, 2.0, 3.0],
+        "max_abs_imag_eig": [0.1, np.nan, 0.9, np.nan],
+        "num_nonhyperbolic_cells": [0, 0, 2, 0],
+    })
+
+    assert hyper.worst_time(summary) == 2.0
+    assert hyper.first_nonhyperbolic_time(summary) == 2.0
+    assert hyper.worst_time(pd.DataFrame({
+        "time": [0.0], "max_abs_imag_eig": [np.nan]})) is None
+
+
+def test_maps_page_needs_the_per_cell_frame(tiny_run):
+    from swme.report import hyperbolicity as hyper
+
+    assert hyper.has_cell_spectra(tiny_run)
+    assert "hyperbolicity_maps" in [s.key for s in assemble.selected_pages(tiny_run)]
+
+    without = report_data.RunData(
+        final=tiny_run.final, order=tiny_run.order,
+        moment_columns=tiny_run.moment_columns, meta=tiny_run.meta,
+        source="directory")
+    keys = [s.key for s in assemble.selected_pages(without)]
+    assert "hyperbolicity" in keys, "the overview page is always present"
+    assert "hyperbolicity_maps" not in keys
+
+
+def test_maps_page_renders_all_panels(tiny_run):
+    from swme.report import hyperbolicity as hyper
+
+    figure = hyper.page_hyperbolicity_maps(tiny_run, DEFAULT_STYLE)
+    assert len(figure.get_axes()) >= 3          # three panels plus colorbars
+    figure.clear()
+
+
+def test_model_level_text_reports_dry_cells_as_such(tiny_run):
+    """The wet-dry run has many dry cells and no genuine loss. The page must
+    say so in those words, not report the dry cells as a finding."""
+    from swme.report import hyperbolicity as hyper
+
+    text = " ".join(hyper.model_level_lines(tiny_run))
+    assert "not evaluated" in text
+    assert "non-hyperbolic cells  0" in text
+    assert "carry no moments" in text
+
+
+def test_genuine_loss_is_reported_as_a_finding(tiny_run):
+    """The branch no real shipped config reaches.
+
+    Every thesis run is clean - 14.4M states replayed with zero loss - so the
+    "we found something" path has to be exercised synthetically or not at all.
+    N >= 2 SWME does lose hyperbolicity, in a narrow wedge of moment ratios,
+    so this is a state the model genuinely admits.
+    """
+    from swme.report import hyperbolicity as hyper
+
+    frames = []
+    for step, time in enumerate([0.0, 0.5, 1.0]):
+        magnitudes = np.zeros(20)
+        if step >= 1:
+            magnitudes[7:9] = 0.35          # a wet cell leaves the real axis
+        frames.append(_cell_frame(magnitudes, step=step, time=time))
+    cells = pd.concat(frames, ignore_index=True)
+
+    run = report_data.RunData(
+        final=tiny_run.final, order=tiny_run.order,
+        moment_columns=tiny_run.moment_columns, meta=tiny_run.meta,
+        source="directory",
+        hyperbolicity=report_data.HyperbolicityData(cells=cells, tolerance=1e-10))
+
+    derived = hyper.recompute_summary(cells)
+    assert list(derived["num_nonhyperbolic_cells"]) == [0, 2, 2]
+    assert hyper.first_nonhyperbolic_time(derived) == 0.5
+
+    text = " ".join(hyper.model_level_lines(run))
+    assert "Genuine loss of hyperbolicity" in text
+    assert "t = 0.5" in text
+    assert "HSWME" in text, "the reader should be told the direct check"
+
+    for page in (hyper.page_hyperbolicity, hyper.page_hyperbolicity_maps):
+        figure = page(run, DEFAULT_STYLE)
+        assert figure.get_axes()
+        figure.clear()
+
+
+def test_recorded_summary_without_cells_is_labelled_as_uncorrectable(tiny_run):
+    """When only the summary survives, its numbers cannot be fixed - so the
+    page has to say that rather than present them as clean."""
+    from swme.report import hyperbolicity as hyper
+
+    summary_only = report_data.RunData(
+        final=tiny_run.final, order=tiny_run.order,
+        moment_columns=tiny_run.moment_columns, meta=tiny_run.meta,
+        source="directory",
+        hyperbolicity=report_data.HyperbolicityData(
+            summary=tiny_run.hyperbolicity.summary, cells=None))
+
+    text = " ".join(hyper.model_level_lines(summary_only))
+    assert "D4" in text and "D3" in text
+    figure = hyper.page_hyperbolicity(summary_only, DEFAULT_STYLE)
+    figure.clear()
+
+
+# ---------------------------------------------------------------------------
 # assembly
 # ---------------------------------------------------------------------------
 

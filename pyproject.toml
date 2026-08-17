@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 moment-sw = "swme.cli:main"
+moment-sw-report = "swme.report.cli:main"
 purge = "swme.purge:main"
 
 [dependency-groups]

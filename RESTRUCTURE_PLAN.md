@@ -762,6 +762,66 @@ thesis case (`Dry_Wet_Test/Dry_N1`) — all CSVs identical, which is what makes 
 path touched is either skipped entirely when `store_hyperbolicity` is false, or writes a file
 that was empty on disk.
 
+#### Step 8.5 Phase 2 — the report skeleton and every non-hyperbolicity page
+
+`src/swme/report/`: `data.py` (the `RunData` intermediate representation and both loaders),
+`history.py` (bounded-memory field-history access), `style.py`, `pages.py`,
+`hyperbolicity.py` (tier 1 real, tier 2 a placeholder until Phase 3), `assemble.py` and
+`cli.py`. Wired as `moment-sw --report` and a new `moment-sw-report <dir>` console script.
+
+**Opt-in, not default.** The design note said `--report/--no-report` defaulting on; Step 8 had
+since made plotting opt-in precisely so a scripted run stays free of matplotlib, and that
+supersedes it. Verified: a plain `cli.run(...)` leaves both `matplotlib` and `matplotlib.pyplot`
+absent from `sys.modules`.
+
+**Nothing here imports pyplot — including the rendering layer.** `data.py` and `history.py` are
+pure pandas/numpy, and `__init__.py` resolves the rendering names through a PEP 562
+`__getattr__`, so `import swme.report` costs nothing. Beyond that, pages build bare
+`matplotlib.figure.Figure` objects rather than going through `plt.figure()`: pyplot would
+register every page in a global list, which for a multi-page document is a leak that needs a
+matching `plt.close` on every path including the failing ones. A `Figure` nobody holds is simply
+collected.
+
+**Memory is the constraint that shaped the loader.** The largest field history is 185 MB /
+1.54M rows and `results/` totals 1.4 GB; `plotter.py` reads it whole and then pivots it.
+Instead: time series come from the small `summary_history.csv`, which also supplies the step
+list for free, and the field history is streamed with `chunksize`, keeping a bounded, evenly
+spaced set of snapshots. Peak is `chunk_rows·(5+N)·8 + n_snap·n_cells·(3+N)·8`, with **no term
+in the number of steps**. Measured on that 185 MB file: **29.8 MB peak, 3.0 s.** Even spacing
+rather than reservoir sampling, because the space-time maps need uniform time coverage or the
+pcolormesh rows misrepresent wave speeds — and because determinism is what makes the two
+loaders comparable.
+
+**Graceful degradation is a tested contract, not a nicety.** The 20 thesis runs have no sidecar
+and all 40 of their hyperbolicity CSVs are 1 byte, so a loader that assumed readable input would
+fail on nearly every run on disk. One choke point (`_read_optional_csv`) treats missing, empty,
+header-only and unparseable alike as *absent*, records the reason in `RunData.warnings`, and the
+cover page prints them. Both the current and the legacy `recharge_`-stemmed hyperbolicity
+filenames are read, since pre-D6 runs keep the old spelling forever. Confirmed end to end:
+`moment-sw-report results/5p2_Horton_At_Rest` produces a 6-page report and names all three gaps
+rather than crashing or implying an all-clear.
+
+**The velocity-profile page calls `compute_vertical_velocity_profile`**, and a test asserts
+*exact* equality against it at N = 0,1,2,3,6 — a tolerance would pass against a reimplementation
+that merely agreed to a few digits, which is exactly the defect in `processing/`, where six
+copies of this maths are each capped at `a_2` or `a_3` and truncate a higher-order run in
+silence.
+
+**Assembly.** Page order is the static order of `DEFAULT_PAGES`, never data-dependent, so a
+diff of page keys means something; selection is an `available` predicate evaluated once, so the
+result reports what was skipped as well as what was drawn. The PDF is written to a `.tmp`
+sibling and `os.replace`d into position — a truncated `report.pdf` sitting beside the CSVs looks
+like a finished artifact, which is worse than no report.
+
+The space-time and profile meshes are rasterised while text and axes stay vector, which took a
+report of the wet-dry case from 640 KB to **99 KB** — worth having when the intended use is one
+PDF per run across twenty runs.
+
+**Validation.** `tests/test_report.py`, 43 tests, plus the repo's first `tests/conftest.py`
+(suite 632 → **675**). Byte-identity re-confirmed against `results/`. End to end,
+`moment-sw-report results/Dry_Wet_Test` reports on all four runs of a nested case family in one
+invocation.
+
 #### Step 8.5 design — an in-package post-processing suite
 
 **Goal.** A `swme/report/` subpackage that renders a multi-page PDF about a single run,

@@ -54,6 +54,28 @@ a plain solver run otherwise imports matplotlib and never uses it.
 Page order is fixed. It does not depend on the data, so two reports of the same case
 can be compared page by page.
 
+## How the pages are laid out
+
+Almost everything on a page has a length that depends on the run: the cover's warning
+list, the prose on the hyperbolicity page, the captions under the diagnostics. The
+layout is therefore measured rather than fixed, and three rules keep it from colliding
+with itself:
+
+- **Text is wrapped to the box it is drawn in.** `ReportStyle` knows the font metrics,
+  so a block is wrapped to the column it will occupy and, if it still does not fit,
+  shrunk until it does. Matplotlib's own `wrap=True` wraps to the *figure* width, not
+  the artist's box, which is why it is not used anywhere here.
+- **A caption takes its space out of its own panel.** The band a note occupies is
+  subtracted from the bottom of the axes it belongs to, never borrowed from the gap
+  above the next panel, so a long caption shortens its own plot instead of printing
+  over the title below it.
+- **A page is only as tall as it needs to be.** Rows whose height depends on the text
+  are measured first; a page with one row of panels or a single placeholder uses part
+  of the sheet rather than stretching two plots over A4.
+
+Style is a value, not a global: every page function takes a `ReportStyle` and no
+`rcParams` are touched, so rendering a report cannot change how anything else plots.
+
 ## Reading the hyperbolicity pages
 
 This is the part most easily misread, so it is worth explaining what the numbers are.

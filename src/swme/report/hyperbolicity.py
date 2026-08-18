@@ -30,13 +30,12 @@ which is true in both the old and new formats.
 
 from __future__ import annotations
 
-import textwrap
-
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import MaxNLocator
 
 from .data import RunData
-from .style import ReportStyle
+from .style import Prose, ReportStyle
 
 INTERFACE_CAVEAT = (
     "These counters eigendecompose the path-averaged interface matrix, not "
@@ -141,8 +140,17 @@ def _space_time(cells: pd.DataFrame, column: str):
 # tier 1: the scheme counters, as prose
 # ---------------------------------------------------------------------------
 
-def _wrap(text: str, width: int = 66) -> list[str]:
-    return ["  " + line for line in textwrap.wrap(text, width)]
+def _wrap(text: str) -> list[str]:
+    """One paragraph, wrapped later to whatever column it is drawn in.
+
+    It used to be wrapped here at a fixed 66 characters, which is wider than
+    the half-page column these blocks are drawn in - the two columns of the
+    hyperbolicity page overprinted each other and ran off the page edge. The
+    width is not knowable at this point, so it is not guessed at: `Prose` marks
+    the text as re-wrappable and `ReportStyle.text_block` wraps it to the box
+    it ends up in.
+    """
+    return [Prose(text)]
 
 
 def scheme_counter_lines(run: RunData) -> list[str]:
@@ -152,14 +160,12 @@ def scheme_counter_lines(run: RunData) -> list[str]:
     """
     counters = run.scheme_counters
     if counters is None or counters.scheme is None:
-        return [
-            "SCHEME-LEVEL COUNTERS", "",
-            "  Scheme not recorded, so the interface-matrix counters cannot be",
-            "  interpreted and are not shown. Roe records one path-averaged",
-            "  matrix per interface, Osher five weight-scaled single-node",
-            "  matrices, and LF and PRICE never eigendecompose at all - the",
-            "  same integer means a different thing in each case.",
-        ]
+        return ["SCHEME-LEVEL COUNTERS", "", *_wrap(
+            "Scheme not recorded, so the interface-matrix counters cannot be "
+            "interpreted and are not shown. Roe records one path-averaged "
+            "matrix per interface, Osher five weight-scaled single-node "
+            "matrices, and LF and PRICE never eigendecompose at all - the "
+            "same integer means a different thing in each case.")]
 
     lines = ["SCHEME-LEVEL COUNTERS", "", f"  scheme                {counters.scheme}"]
 
@@ -201,8 +207,9 @@ def model_level_lines(run: RunData) -> list[str]:
 
     if hyper is None or not hyper.has_cells:
         if hyper is not None and hyper.summary is not None:
-            return lines + ["  Per-cell frame absent; see the recorded summary "
-                            "above.", "", *_wrap(STALE_SUMMARY_NOTE)]
+            return lines + [*_wrap("Per-cell frame absent; see the recorded "
+                                   "summary above."), "",
+                            *_wrap(STALE_SUMMARY_NOTE)]
         return lines + _wrap("Not captured. " + ENABLE_HINT)
 
     derived = recompute_summary(hyper.cells, hyper.tolerance)
@@ -237,15 +244,26 @@ def model_level_lines(run: RunData) -> list[str]:
 # page 6: overview
 # ---------------------------------------------------------------------------
 
+def _spectrum_scale(ax, magnitude, tolerance: float) -> float:
+    """Scale a `|Im(lambda)|` axis, and return the peak it was scaled for.
+
+    A clean run is identically zero, and matplotlib then invents a +-0.04 range
+    in which the tolerance line at 1e-10 lands exactly on top of the zero curve
+    - two artists, one apparent line, and a y-axis whose numbers mean nothing.
+    Zero therefore gets an explicit range in units of the tolerance, so the
+    curve sits on the axis and the tolerance is visibly above it.
+    """
+    finite = np.isfinite(magnitude)
+    peak = float(np.max(magnitude[finite])) if finite.any() else 0.0
+    if peak > 0.0:
+        ax.set_yscale("symlog", linthresh=max(tolerance, 1e-16))
+    else:
+        ax.set_ylim(-0.2 * tolerance, 4.0 * tolerance)
+    return peak
+
+
 def page_hyperbolicity(run: RunData, style: ReportStyle):
     """Tier 1 (scheme counters) and tier 2 (the model's own spectrum)."""
-    figure, axes = style.new_page(3, 2, height_ratios=[1.35, 1.0, 1.0])
-    style.page_header(figure, "Hyperbolicity",
-                      "scheme-level counters and the model-level spectrum")
-
-    style.text_block(axes[0, 0], scheme_counter_lines(run))
-    style.text_block(axes[0, 1], model_level_lines(run))
-
     hyper = run.hyperbolicity
     derived = None
     if hyper is not None and hyper.has_cells:
@@ -253,12 +271,47 @@ def page_hyperbolicity(run: RunData, style: ReportStyle):
     elif hyper is not None and hyper.summary is not None:
         derived = _adapt_recorded_summary(hyper.summary)
 
+    # Both blocks are prose of a length that depends on the scheme and on what
+    # was recorded, so the row that holds them is measured rather than guessed
+    # at - a fixed ratio either clips the text or leaves a band of white space
+    # where a reader looks for a missing panel.
+    top, gap = 0.895, 0.055
+    column = style.column_width(ncols=2)
+    counters = style.measure(scheme_counter_lines(run), column)
+    model = style.measure(model_level_lines(run), column)
+    text_height = max(counters[2], model[2])
+
+    def _blocks(axes) -> None:
+        for ax, (lines, size, _) in zip(axes, (counters, model)):
+            style.text_block(ax, lines, size=size)
+
+    # The page is sized to what there is to say. With no spectrum to plot the
+    # four panels below used to be switched off one by one, leaving two thirds
+    # of an A4 page blank under a one-line placeholder.
     if derived is None:
-        style.placeholder(axes[1, 0], "Model-level spectrum not captured",
-                          ENABLE_HINT)
-        for position in ((1, 1), (2, 0), (2, 1)):
-            axes[position].axis("off")
+        note_height = 0.14
+        figure, axes = style.new_page(
+            2, 2, height_ratios=[text_height, note_height],
+            top=top, bottom=top - text_height - note_height - gap,
+            hspace=2.0 * gap / (text_height + note_height))
+        style.page_header(figure, "Hyperbolicity",
+                          "scheme-level counters and the model-level spectrum")
+        _blocks(axes[0])
+        grid = axes[0, 0].get_subplotspec().get_gridspec()
+        axes[1, 0].remove()
+        axes[1, 1].remove()
+        style.placeholder(figure.add_subplot(grid[1, :]),
+                          "Model-level spectrum not captured", ENABLE_HINT)
         return figure
+
+    bottom = 0.075
+    panel = (top - bottom - text_height - 2 * gap) / 2
+    figure, axes = style.new_page(
+        3, 2, height_ratios=[text_height, panel, panel], top=top, bottom=bottom,
+        hspace=3.0 * gap / (text_height + 2 * panel))
+    style.page_header(figure, "Hyperbolicity",
+                      "scheme-level counters and the model-level spectrum")
+    _blocks(axes[0])
 
     time = derived["time"].to_numpy()
     recomputed = hyper.has_cells
@@ -267,21 +320,25 @@ def page_hyperbolicity(run: RunData, style: ReportStyle):
     ax = axes[1, 0]
     magnitude = derived["max_abs_imag_eig"].to_numpy(dtype=np.float64)
     ax.plot(time, np.where(np.isfinite(magnitude), magnitude, np.nan),
-            linewidth=style.line_width)
+            linewidth=style.line_width, label=r"worst $|\mathrm{Im}\,\lambda|$")
     ax.axhline(hyper.tolerance, color="tab:red", linestyle="--", linewidth=1.0,
                label="tolerance")
-    if np.nanmax(magnitude) > 0:
-        ax.set_yscale("symlog", linthresh=max(hyper.tolerance, 1e-16))
+    peak = _spectrum_scale(ax, magnitude, hyper.tolerance)
     style.axis(ax, "$t$", r"largest $|\mathrm{Im}\,\lambda|$",
                "worst spectrum per step", legend=True)
 
     # 2/7 - how many cells, split by population.
     ax = axes[1, 1]
-    ax.plot(time, derived["num_nonhyperbolic_cells"], linewidth=style.line_width,
-            label="non-hyperbolic")
+    counts = derived["num_nonhyperbolic_cells"].to_numpy(dtype=np.float64)
+    ax.plot(time, counts, linewidth=style.line_width, label="non-hyperbolic")
+    top = float(np.nanmax(counts)) if counts.size else 0.0
     if "num_not_evaluated_cells" in derived:
-        ax.plot(time, derived["num_not_evaluated_cells"], linewidth=1.0,
-                linestyle="--", color="0.55", label="dry / not evaluated")
+        dry = derived["num_not_evaluated_cells"].to_numpy(dtype=np.float64)
+        ax.plot(time, dry, linewidth=1.0, linestyle="--", color="0.55",
+                label="dry / not evaluated")
+        top = max(top, float(np.nanmax(dry)) if dry.size else 0.0)
+    ax.set_ylim(0.0, max(1.0, 1.08 * top))
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))   # cells are counted
     style.axis(ax, "$t$", "cells", "affected cells per step", legend=True)
     style.caption(ax,
                   "Dry cells are drawn separately and deliberately: they carry "
@@ -291,15 +348,28 @@ def page_hyperbolicity(run: RunData, style: ReportStyle):
 
     # 3/7 - fraction, over evaluated cells only.
     ax = axes[2, 0]
-    ax.plot(time, derived["fraction_nonhyperbolic_cells"],
-            linewidth=style.line_width)
-    style.axis(ax, "$t$", "fraction", "of evaluated cells")
+    fraction = derived["fraction_nonhyperbolic_cells"].to_numpy(dtype=np.float64)
+    ax.plot(time, fraction, linewidth=style.line_width)
+    highest = float(np.nanmax(fraction)) if np.isfinite(fraction).any() else 0.0
+    ax.set_ylim(0.0, min(1.0, 1.15 * highest) if highest > 0 else 1.0)
+    style.axis(ax, "$t$", "fraction of evaluated cells",
+               "non-hyperbolic fraction")
 
     # 4/7 - where the worst cell sits.
     ax = axes[2, 1]
-    worst_x = derived["worst_x"].to_numpy(dtype=np.float64)
-    ax.plot(time, worst_x, ".", markersize=3)
-    style.axis(ax, "$t$", "$x$ of worst cell", "location of the worst spectrum")
+    if peak > 0.0:
+        worst_x = derived["worst_x"].to_numpy(dtype=np.float64)
+        ax.plot(time, worst_x, ".", markersize=3)
+        style.axis(ax, "$t$", "$x$ of worst cell",
+                   "location of the worst spectrum")
+    else:
+        # Every evaluated spectrum was exactly real, so `argmax` returns the
+        # first cell at every step. Drawing that is a flat line at x = 0 that
+        # looks like a finding and is nothing of the kind.
+        style.placeholder(
+            ax, "No worst cell to locate",
+            "Every evaluated spectrum was real to the last bit, so no cell is "
+            "worse than any other and there is no location to report.")
     return figure
 
 
@@ -322,7 +392,8 @@ def _adapt_recorded_summary(summary: pd.DataFrame) -> pd.DataFrame:
 
 def page_hyperbolicity_maps(run: RunData, style: ReportStyle):
     """Space-time and snapshot views of the per-cell spectrum."""
-    figure, axes = style.new_page(3, 1, height_ratios=[1.0, 1.0, 1.0])
+    # `right` leaves room for the "hyperbolic" / "lost" colourbar tick labels.
+    figure, axes = style.new_page(3, 1, hspace=0.30, right=0.89)
     hyper = run.hyperbolicity
     cells = hyper.cells
     derived = recompute_summary(cells, hyper.tolerance)
@@ -330,42 +401,63 @@ def page_hyperbolicity_maps(run: RunData, style: ReportStyle):
         figure, "Hyperbolicity in space and time",
         f"per-cell spectrum of A(U), {len(derived)} recorded steps")
 
+    magnitude = cells["max_abs_imag_eig"].to_numpy(dtype=np.float64)
+    finite = np.isfinite(magnitude)
+    peak = float(np.max(magnitude[finite])) if finite.any() else 0.0
+
     # 5/7 - space-time magnitude, floored then log-scaled.
     ax = axes[0, 0]
     x, t, values = _space_time(cells, "max_abs_imag_eig")
     norm = style.heatmap_norm(values)
-    mesh = ax.pcolormesh(x, t, np.maximum(values, style.heatmap_floor),
-                         cmap="magma", norm=norm, shading="nearest",
-                         rasterized=True)
-    figure.colorbar(mesh, ax=ax, label=r"$|\mathrm{Im}\,\lambda|$")
+    if norm is None:
+        # A linear scale on a field that never left the real axis. Flooring is
+        # a log-scale device; applied here it would put 1e-16 on the colourbar
+        # and invite the reader to take the floor for a measurement.
+        mesh = ax.pcolormesh(x, t, values, cmap="magma", vmin=0.0,
+                             vmax=max(peak, hyper.tolerance),
+                             shading="nearest", rasterized=True)
+    else:
+        mesh = ax.pcolormesh(x, t, np.maximum(values, style.heatmap_floor),
+                             cmap="magma", norm=norm, shading="nearest",
+                             rasterized=True)
     style.axis(ax, "$x$", "$t$", "magnitude of the imaginary part")
     style.caption(ax, "Blank cells were never evaluated (dry, or a failed "
-                      "eigensolve); they are not zeros.")
+                      "eigensolve); they are not zeros."
+                      + ("" if peak > 0 else
+                         " Every evaluated cell is exactly zero here, so the "
+                         "colour scale runs to the tolerance rather than to a "
+                         "measured maximum."))
+    style.colorbar(ax, mesh, r"$|\mathrm{Im}\,\lambda|$")
 
     # 6/7 - the same thing as a three-state classification.
     ax = axes[1, 0]
-    magnitude = cells["max_abs_imag_eig"].to_numpy(dtype=np.float64)
     state = np.where(~np.isfinite(magnitude), np.nan,
                      np.where(magnitude > hyper.tolerance, 0.0, 1.0))
     classified = cells.assign(_state=state)
     x, t, values = _space_time(classified, "_state")
     mesh = ax.pcolormesh(x, t, values, cmap="RdYlGn", vmin=0.0, vmax=1.0,
                          shading="nearest", rasterized=True)
-    bar = figure.colorbar(mesh, ax=ax, ticks=[0.0, 1.0])
-    bar.ax.set_yticklabels(["lost", "hyperbolic"], fontsize=style.tick_size)
     style.axis(ax, "$x$", "$t$", "cell classification (white = not evaluated)")
+    bar = style.colorbar(ax, mesh, ticks=[0.0, 1.0])
+    bar.ax.set_yticklabels(["lost", "hyperbolic"], fontsize=style.tick_size)
 
     # 7/7 - profiles at the times that matter.
     ax = axes[2, 0]
     interesting = [("first step", float(derived["time"].iloc[0]))]
-    peak = worst_time(derived)
-    if peak is not None:
-        interesting.append(("worst spectrum", peak))
+    worst = worst_time(derived)
+    if worst is not None:
+        interesting.append(("worst spectrum", worst))
     first_bad = first_nonhyperbolic_time(derived)
     if first_bad is not None:
         interesting.append(("first loss", first_bad))
 
+    drawn: list[float] = []
     for label, moment in interesting:
+        # On a clean run the first step *is* the worst step, and labelling one
+        # curve twice reads as two coincident findings.
+        if any(np.isclose(moment, done) for done in drawn):
+            continue
+        drawn.append(moment)
         index = int(np.argmin(np.abs(derived["time"].to_numpy() - moment)))
         step = int(derived["step"].iloc[index])
         rows = cells[cells["step"] == step].sort_values("x")
@@ -373,8 +465,7 @@ def page_hyperbolicity_maps(run: RunData, style: ReportStyle):
                 label=f"{label} ($t = {moment:.4g}$)")
     ax.axhline(hyper.tolerance, color="0.5", linestyle="--", linewidth=0.9,
                label="tolerance")
-    if np.nanmax(magnitude) > 0:
-        ax.set_yscale("symlog", linthresh=max(hyper.tolerance, 1e-16))
+    _spectrum_scale(ax, magnitude, hyper.tolerance)
     style.axis(ax, "$x$", r"$|\mathrm{Im}\,\lambda|$",
                "spectrum across the domain", legend=True)
     return figure

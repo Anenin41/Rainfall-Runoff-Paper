@@ -13,6 +13,12 @@ they all save-and-close one file each.
 A page also never raises because data is missing. Either its `available`
 predicate in `assemble.py` excluded it, or it draws an explicit placeholder
 saying what is absent and how to capture it.
+
+Layout is likewise the page's own business and is decided before anything is
+drawn: a page that needs half the height uses half the height rather than
+stretching two panels over A4, and a page whose text length is data-dependent
+(the cover, whose warning list is not known until the run is read) measures the
+text first and sizes its blocks to it. Nothing is laid out by eye.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from __future__ import annotations
 import numpy as np
 
 from .data import RunData
-from .style import ReportStyle
+from .style import Prose, ReportStyle
 
 
 def _fmt(value, spec: str = ".6g") -> str:
@@ -35,14 +41,37 @@ def _fmt(value, spec: str = ".6g") -> str:
     return str(value)
 
 
+def _panel_grid(style: ReportStyle, panels: int, **kwargs):
+    """A 2-column grid for `panels` plots, no taller than it needs to be.
+
+    Two or more rows fill the page. A single row does not: stretched over the
+    full height of A4 a lone pair of panels comes out at a 1:3 aspect, which is
+    how an N = 0 run used to be drawn.
+    """
+    rows = int(np.ceil(panels / 2))
+    return style.new_page(rows, 2, bottom=0.615 if rows == 1 else 0.075,
+                          **kwargs)
+
+
+def _blank_unused(axes, used: int) -> None:
+    rows, cols = axes.shape
+    for position in range(used, rows * cols):
+        axes[position // cols, position % cols].axis("off")
+
+
 # ---------------------------------------------------------------------------
 # 1. cover
 # ---------------------------------------------------------------------------
 
 def page_cover(run: RunData, style: ReportStyle):
-    figure, axes = style.new_page(3, 1, height_ratios=[1.15, 1.0, 0.75])
-    style.page_header(figure, run.title, "Run report")
+    """Three stacked blocks, each exactly as tall as the text inside it.
 
+    The blocks used to have fixed height ratios, which left a hand's width of
+    white space between sections on a short run and pushed the notes off the
+    page on a run with several warnings. Here the text is wrapped to the known
+    column width first, so the line count - and therefore the layout - is a
+    measured quantity.
+    """
     meta = run.meta
     left = [
         "MODEL",
@@ -66,7 +95,6 @@ def page_cover(run: RunData, style: ReportStyle):
         left += ["", "RECHARGE",
                  f"  infiltration     {_fmt(meta.infiltration_type)}",
                  f"  rainfall rate    {_fmt(meta.rainfall_rate)}"]
-    style.text_block(axes[0, 0], left)
 
     thresholds = run.effective_thresholds
     right = [
@@ -84,14 +112,30 @@ def page_cover(run: RunData, style: ReportStyle):
               f"  source           {run.source}",
               f"  wall time        {_fmt(meta.elapsed_seconds, '.3g')} s",
               f"  generated        {_fmt(meta.generated_at)}"]
-    style.text_block(axes[1, 0], right)
 
-    notes = ["NOTES"] if run.warnings else []
-    notes += [f"  - {line}" for line in run.warnings]
-    if not run.warnings:
-        notes = ["NOTES", "  All expected outputs were present."]
-    style.text_block(axes[2, 0], notes, size=style.caption_size + 0.5,
-                     family="sans-serif")
+    notes = ["NOTES"]
+    notes += ([Prose(f"- {line}") for line in run.warnings]
+              or [Prose("- All expected outputs were present.")])
+
+    # Measure against the column the blocks will actually occupy, so the line
+    # counts - and with them the layout - are the ones that get drawn.
+    margins, top = dict(left=0.11, right=0.95), 0.895
+    width = style.column_width(**margins)
+    blocks = [style.measure(left, width),
+              style.measure(right, width),
+              style.measure(notes, width, size=style.caption_size + 0.5,
+                            family="sans-serif")]
+    heights = [height for _, _, height in blocks]
+    gap = 0.038                                    # between sections
+    bottom = max(0.05, top - sum(heights) - 2 * gap)
+
+    figure, axes = style.new_page(
+        3, 1, height_ratios=heights, bottom=bottom, top=top,
+        hspace=3.0 * gap / max(sum(heights), 1e-6), **margins)
+    style.page_header(figure, run.title, "Run report")
+    for index, (lines, size, _) in enumerate(blocks):
+        style.text_block(axes[index, 0], lines, size=size,
+                         family="sans-serif" if index == 2 else "monospace")
     return figure
 
 
@@ -106,8 +150,7 @@ def page_final_state(run: RunData, style: ReportStyle):
     fixed 3x3 grid, which silently overflows from N = 6.
     """
     panels = 2 + run.order
-    rows = int(np.ceil(panels / 2))
-    figure, axes = style.new_page(rows, 2)
+    figure, axes = _panel_grid(style, panels)
     style.page_header(figure, "Final state",
                       f"t = {_fmt(run.meta.t_end)}, {run.n_cells} cells")
 
@@ -122,11 +165,9 @@ def page_final_state(run: RunData, style: ReportStyle):
         if column == "h" and run.has_topography:
             ax.plot(x, run.bed_elevation, color="0.45", linewidth=1.0,
                     label="bed $Z$")
-            ax.legend(fontsize=style.legend_size, frameon=False)
-        style.axis(ax, "$x$", label)
+        style.axis(ax, "$x$", label, legend=column == "h" and run.has_topography)
 
-    for position in range(len(series), rows * 2):
-        axes[position // 2, position % 2].axis("off")
+    _blank_unused(axes, len(series))
     return figure
 
 
@@ -136,20 +177,18 @@ def page_final_state(run: RunData, style: ReportStyle):
 
 def page_time_histories(run: RunData, style: ReportStyle):
     panels = 2 + run.order
-    rows = int(np.ceil(panels / 2))
-    figure, axes = style.new_page(rows, 2)
-    style.page_header(figure, "Time histories", "spatial statistics per step")
-
     summary = run.summary_history
     if summary is None:
+        figure, axes = style.new_page(1, 1, bottom=0.60)
+        style.page_header(figure, "Time histories", "spatial statistics per step")
         style.placeholder(
             axes[0, 0], "Time histories not stored",
             "Set postprocessing.store_history: true (and history_stride) "
             "in the config and re-run.")
-        for position in range(1, rows * 2):
-            axes[position // 2, position % 2].axis("off")
         return figure
 
+    figure, axes = _panel_grid(style, panels)
+    style.page_header(figure, "Time histories", "spatial statistics per step")
     time = summary["time"].to_numpy()
 
     ax = axes[0, 0]
@@ -174,8 +213,7 @@ def page_time_histories(run: RunData, style: ReportStyle):
                             alpha=0.20, linewidth=0, label="min-max")
         style.axis(ax, "$t$", rf"moment $\alpha_{{{index}}}$", legend=True)
 
-    for position in range(panels, rows * 2):
-        axes[position // 2, position % 2].axis("off")
+    _blank_unused(axes, panels)
     return figure
 
 
@@ -184,7 +222,9 @@ def page_time_histories(run: RunData, style: ReportStyle):
 # ---------------------------------------------------------------------------
 
 def page_space_time(run: RunData, style: ReportStyle):
-    figure, axes = style.new_page(2, 1)
+    # The right margin holds a colourbar's tick labels and its rotated label,
+    # which is half an inch of type that has to land on the page.
+    figure, axes = style.new_page(2, 1, hspace=0.30, bottom=0.10, right=0.90)
     snapshots = run.snapshots
     style.page_header(
         figure, "Space-time evolution",
@@ -195,9 +235,10 @@ def page_space_time(run: RunData, style: ReportStyle):
                                          ("u_m", "mean velocity $u_m$")]):
         ax = axes[row, 0]
         mesh = ax.pcolormesh(x, snapshots.times, snapshots.field(name),
-                             cmap=style.colormap, shading="nearest", rasterized=True)
-        figure.colorbar(mesh, ax=ax, label=label)
+                             cmap=style.colormap, shading="nearest",
+                             rasterized=True)
         style.axis(ax, "$x$", "$t$", label)
+        style.colorbar(ax, mesh, label)
     return figure
 
 
@@ -213,7 +254,7 @@ def page_velocity_profiles(run: RunData, style: ReportStyle):
     the six hand-rolled copies in `processing/` are each capped at `a_2` or
     `a_3` and truncate a higher-order run in silence.
     """
-    figure, axes = style.new_page(2, 2)
+    figure, axes = style.new_page(2, 2, wspace=0.42, hspace=0.34, right=0.92)
     style.page_header(figure, "Vertical velocity profiles",
                       r"$u(z) = u_m + \sum_i \alpha_i\,\phi_i(z)$, "
                       r"$\phi_i(z) = P_i(1-2z)$")
@@ -240,9 +281,10 @@ def page_velocity_profiles(run: RunData, style: ReportStyle):
 
     # The same cells as a space-z map at the final time.
     ax = axes[0, 1]
-    mesh = ax.pcolormesh(x, z, profiles.T, cmap=style.colormap, shading="nearest", rasterized=True)
-    figure.colorbar(mesh, ax=ax, label="$u$")
+    mesh = ax.pcolormesh(x, z, profiles.T, cmap=style.colormap,
+                         shading="nearest", rasterized=True)
     style.axis(ax, "$x$", "$z$", "$u(x, z)$ at $t_{end}$")
+    style.colorbar(ax, mesh, "$u$")
 
     # Deviation from plug flow: what the moments actually buy.
     ax = axes[1, 0]
@@ -255,9 +297,10 @@ def page_velocity_profiles(run: RunData, style: ReportStyle):
     else:
         limit = float(np.nanmax(np.abs(deviation))) or 1.0
         mesh = ax.pcolormesh(x, z, deviation.T, cmap="coolwarm",
-                             vmin=-limit, vmax=limit, shading="nearest", rasterized=True)
-        figure.colorbar(mesh, ax=ax, label="$u - u_m$")
+                             vmin=-limit, vmax=limit, shading="nearest",
+                             rasterized=True)
         style.axis(ax, "$x$", "$z$", "departure from plug flow")
+        style.colorbar(ax, mesh, "$u - u_m$")
 
     # Time evolution of the profile at mid-domain, when history exists.
     ax = axes[1, 1]
@@ -283,7 +326,9 @@ def page_velocity_profiles(run: RunData, style: ReportStyle):
 # ---------------------------------------------------------------------------
 
 def page_wet_dry(run: RunData, style: ReportStyle):
-    figure, axes = style.new_page(3, 1, height_ratios=[1.0, 1.0, 0.8])
+    # `right` leaves room for the widest colourbar tick label, "transition".
+    figure, axes = style.new_page(3, 1, height_ratios=[1.0, 1.0, 0.65],
+                                  hspace=0.30, right=0.89)
     thresholds = run.effective_thresholds
     style.page_header(
         figure, "Wet-dry behaviour",
@@ -298,13 +343,21 @@ def page_wet_dry(run: RunData, style: ReportStyle):
                label="$h_{wet}$")
     ax.axhline(thresholds.h_dry, color="tab:red", linestyle=":", linewidth=1.0,
                label="$h_{dry}$")
+    # A dry cell holds exactly 0, and an unbounded log axis then runs from
+    # 1e-315 to the free surface: 300 decades of nothing, in which the two
+    # thresholds the panel is about are a single line. The view stops three
+    # decades below h_dry and the empty cells fall off the bottom.
+    ax.set_ylim(thresholds.h_dry * 1e-3,
+                max(1.6 * float(np.max(h)), 10.0 * thresholds.h_wet))
     style.axis(ax, "$x$", "depth (log)", "final depth against the thresholds",
                legend=True)
     style.caption(
         ax, "Below h_dry a cell carries no moments and its velocity is driven "
             "to zero; between the thresholds the moments ramp linearly. A "
             "vacuum front always sits below h_dry, which is why the computed "
-            "front lags the exact one (see RESTRUCTURE_PLAN.md section 6).")
+            "front lags the exact one (see RESTRUCTURE_PLAN.md section 6). "
+            "Cells holding exactly zero cannot be drawn on a log axis and run "
+            "off the bottom of it.")
 
     ax = axes[1, 0]
     if run.snapshots is not None:
@@ -313,10 +366,12 @@ def page_wet_dry(run: RunData, style: ReportStyle):
         state[depths < thresholds.h_wet] = 1.0             # transition
         state[depths <= thresholds.h_dry] = 0.0            # dry
         mesh = ax.pcolormesh(run.snapshots.x, run.snapshots.times, state,
-                             cmap="RdYlBu", vmin=0, vmax=2, shading="nearest", rasterized=True)
-        bar = figure.colorbar(mesh, ax=ax, ticks=[0, 1, 2])
-        bar.ax.set_yticklabels(["dry", "transition", "wet"], fontsize=style.tick_size)
+                             cmap="RdYlBu", vmin=0, vmax=2, shading="nearest",
+                             rasterized=True)
         style.axis(ax, "$x$", "$t$", "wet-dry state over time")
+        bar = style.colorbar(ax, mesh, ticks=[0, 1, 2])
+        bar.ax.set_yticklabels(["dry", "transition", "wet"],
+                               fontsize=style.tick_size)
     else:
         style.placeholder(ax, "No field history",
                           "The wet-dry map over time needs store_history: true.")
@@ -347,7 +402,7 @@ def page_topography(run: RunData, style: ReportStyle):
     non-flat bed a lake at rest looks like an inverted bump in `h` alone, which
     reads as a solver failure when it is exactly the correct answer.
     """
-    figure, axes = style.new_page(3, 1)
+    figure, axes = style.new_page(3, 1, hspace=0.30)
     style.page_header(figure, "Topography and well-balancing",
                       f"bed profile: {run.meta.bed_profile}")
 

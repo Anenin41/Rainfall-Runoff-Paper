@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
 # Run the smoke-test configs in parallel, one core each.
 #
-# These two cases between them exercise most of the solver: recharge with
-# Horton infiltration, the HSWME closure, well-balanced topography, wet-dry
-# handling, and the hyperbolicity diagnostic. Running them concurrently is
-# worth it because they are independent and each pins one core.
+# The three cases are meant to be run together and shown to someone: between
+# them they cover most of what the solver can do.
+#
+#   1  applied physics    rainfall + Horton infiltration + mixing friction,
+#                         HSWME at N=3, over a non-flat bed (Roe, well
+#                         balanced), always wet
+#   2  robustness         dam break onto an exactly dry bed, wet-dry engine,
+#                         stiff friction integrated implicitly, Osher flux
+#   3  the model's limits N=5 moment hierarchy, exfiltration, periodic
+#                         domain, and the SWME-vs-HSWME hyperbolicity
+#                         contrast the diagnostic exists to settle
+#
+# Each config's header comment says what to look for and quotes the numbers
+# the run should reproduce. Add --report and read the PDFs.
 #
 # Usage:
-#   scripts/run_smoke_tests.sh              # both, in parallel
+#   scripts/run_smoke_tests.sh              # all three, in parallel
 #   scripts/run_smoke_tests.sh --report     # also write report.pdf per run
 #   scripts/run_smoke_tests.sh smoke_test_2 # just the ones matching a name
 #
@@ -23,6 +33,7 @@ RESULTS_DIR="${REPO_ROOT}/results"
 CONFIGS=(
     smoke_test_1
     smoke_test_2
+    smoke_test_3
 )
 
 REPORT=""
@@ -32,7 +43,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -r|--report) REPORT="--report"; shift ;;
         -h|--help)
-            sed -n '2,17p' "${BASH_SOURCE[0]}"
+            sed -n '2,29p' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *) FILTERS+=("$1"); shift ;;

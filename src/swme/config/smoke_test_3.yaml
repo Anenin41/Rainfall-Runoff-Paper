@@ -1,0 +1,103 @@
+# ===========================================================================
+# SMOKE TEST 3 of 3 - THE MOMENT HIERARCHY AND ITS LIMITS
+# A high-order (N = 5) recharge run driven by rainfall *and* exfiltration,
+# on a periodic domain.
+#
+#   uv run moment-sw --config smoke_test_3 --report
+#
+# Runtime: ~85 s on one core, report included (160 cells, 277 steps).
+# ---------------------------------------------------------------------------
+# WHAT THIS RUN EXERCISES
+#
+#   arbitrary N          N = 5 - h, u_m and five moments. Nothing in the
+#                        solver is hand-coded per order: the transport
+#                        matrix, the friction operator and the vertical
+#                        basis all come from the generic shifted-Legendre
+#                        coefficient engine
+#   exfiltration         constant_infiltration_rate < 0, i.e. water entering
+#                        the surface flow from the bed, which is the branch
+#                        Horton cannot reach (its I is never negative)
+#   both mixing terms    alpha_R and alpha_I are active together here:
+#                        f_R = alpha_R*R and f_I = alpha_I*max(0, -I)
+#   SWME vs HSWME        the closure switch, at an order where it matters
+#   PERIODIC             the wrap-around boundary, and a flat bed - so this
+#                        run also covers the non-augmented code path that a
+#                        config without a topography: section takes
+#   diagnostics          full history plus the cell-by-cell spectrum of A(U)
+#
+# ---------------------------------------------------------------------------
+# WHAT TO LOOK FOR
+#
+# * The vertical profile is the point of a moment model. With five moments
+#   the profile page shows structure a depth-averaged model cannot carry.
+#   The initial condition is *nested* in N: h and u_m do not depend on the
+#   order at all, and moment i is seeded at (-1/2)^(i-1) of the first, so
+#   re-running this case at any lower order starts from exactly the
+#   truncation of this state. That is what makes an N-to-N comparison a
+#   comparison of models rather than of two different problems.
+# * Mass. R - I = 0.1 - (-0.1) = 0.2 of net input per unit time, uniform in
+#   x, with nothing to drain it on a periodic domain: mean h must rise at
+#   exactly 0.2 per unit time, and does - 1.00705 at t = 0 to 1.08718 at
+#   t = 0.4007, a straight line on the time-history page.
+# * Hyperbolicity - the reason this run is here. HSWME is hyperbolic at
+#   every order, and this run shows exactly that: 0 non-hyperbolic cells of
+#   44480 records, max|Im(lambda)| = 0 to the last bit.
+#
+#   To see the other side of it, flip one line - hyperbolic: false, the
+#   plain SWME closure - and re-run. Measured on this case:
+#
+#       closure   non-hyperbolic cells   max|Im(lambda)|   scheme counters
+#       HSWME (this)     0 / 44480              0.0            0 / 44597
+#       SWME           615 / 44640              1.0e-02      618 / 44758
+#
+#   Both closures start clean - 0 of 160 cells at t = 0, which is the part
+#   the seeded ray controls, its moments decaying as (-1/2)^(i-1) outside
+#   the documented N=2 unstable wedge. Under SWME the recharge forcing then
+#   walks the state off that ray by step 1 (t = 0.0014), and 33 of the 279
+#   steps carry at least one ill-posed cell. That is the documented
+#   behaviour of the SWME closure for N >= 2, not a solver bug: the model is
+#   genuinely ill posed there, and the report says so cell by cell instead
+#   of producing plausible-looking output in silence.
+# ===========================================================================
+
+pde:
+  type: RechargeSWME1D
+  initial_condition: smooth_nested_profile_pulse_aggressive
+  viscosity: 1.0e-3
+  slip_length: 1.0
+  linear_source: false
+  hyperbolic: true              # HSWME. Flip to false for the contrast above
+  mixing_friction_model: admissible
+  alpha_R: 1.0                  # surface mixing friction from rainfall
+  alpha_I: 1.0                  # bed mixing friction from exfiltration -
+                                # only ever active because I < 0 below
+  rainfall_rate: 0.1            # R
+  infiltration_type: constant
+  constant_infiltration_rate: -0.1    # I0 < 0: exfiltration, water in
+  constant_infiltration_eps: 1.0e-16
+  constant_limit_by_rainfall: false          # caps apply to I0 > 0 only
+  constant_limit_by_available_water: false
+
+grid:
+  x1: 0.0
+  x2: 1.0
+  resolution_x: 160
+
+numerics:
+  order: 5                      # N = 5: h, u_m, a1 .. a5
+  method: classical
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: PERIODIC
+  t_end: 0.4
+
+# No topography: section - the bed is flat and the solver stays on its
+# original, non-augmented path. No wet_dry: section either, so the package
+# defaults (h_dry 1e-4, h_wet 1e-3) apply; nothing here comes near them.
+
+postprocessing:
+  store_history: true
+  history_stride: 1
+  store_hyperbolicity: true
+  hyperbolicity_stride: 1

@@ -1,50 +1,111 @@
-# Smoke test: exercises RechargeSWME1D (rainfall + Horton infiltration +
-# admissible mixing friction), the HSWME hyperbolic closure, well-balanced
-# topography coupling (Roe), and the hyperbolicity diagnostic, all in one run.
+# ===========================================================================
+# SMOKE TEST 1 of 3 - APPLIED PHYSICS
+# Rainfall-runoff over a stepped hillslope, with a vertically resolved
+# velocity profile.
 #
-# NOTE: h never drops below 1.0 under horton_moment_order_pulse, so the
-# wet_dry engine is present but not meaningfully triggered here (see below).
-# NOTE: no shipped thesis config pairs topography with RechargeSWME1D, so the
-# well-balancing property is untested territory for this combination.
+#   scripts/run_smoke_tests.sh --report        # runs all three, writes PDFs
+#   uv run moment-sw --config smoke_test_1 --report
+#
+# Runtime: ~110 s on one core, report included (160 cells, 406 steps).
+# ---------------------------------------------------------------------------
+# WHAT THIS RUN EXERCISES
+#
+#   RechargeSWME1D       rainfall R, Horton infiltration I(t), and the
+#                        admissible mixing-friction closure f_R, f_I
+#   HSWME closure        hyperbolic: true, at N = 3 - one order past the
+#                        N <= 2 the thesis cases stop at, so it also
+#                        exercises the generic-N coefficient engine
+#   topography           a non-flat bed coupled through the augmented
+#                        path-conservative state W = (U, Z)
+#   Roe                  the well-balanced flux (viscosity polynomial with
+#                        P(0) = 0); LF and PRICE are not, over a bed
+#   Navier-slip friction viscosity 1e-3 with slip length 1, explicit
+#   diagnostics          full field/summary history plus the cell-by-cell
+#                        spectrum of A(U) at every step
+#
+# It produces every report page except the wet-dry one: this case stays wet
+# everywhere by design (smoke_test_2 is the drying case).
+# ---------------------------------------------------------------------------
+# WHAT TO LOOK FOR
+#
+# * Horton ponding time. The infiltration rate is I(t) = min(f_p(t), R, h/dt)
+#   with capacity f_p(t) = fc + (f0 - fc)*exp(-k*t). While f_p > R the soil
+#   swallows the entire rainfall and the net mass source R - I is exactly
+#   zero; runoff only begins once the capacity has decayed through R, at
+#
+#       t_p = ln((f0 - fc)/(R - fc)) / k = ln(0.19/0.15)/3 = 0.0788
+#
+#   With these numbers the net source then climbs towards R - fc = 0.15. On
+#   the "Time histories" page, mean h holds at 1.00705 - flat to the last
+#   digit, which is also a statement about the transport - until t = 0.081,
+#   then rises to 1.0415 by t_end. That kink is the model working, not a
+#   numerical artefact.
+# * The bed. The flow accelerates over the terrace edge, and the space-time
+#   map shows the drawdown that parks itself just upstream of x = 0.45 while
+#   the two waves launched by the initial pulse run out of the domain. Note
+#   that the report's "departure from the still water level" panel is *not* a
+#   C-property test on this run: the case is not a lake at rest, so what that
+#   panel shows is the flow plus the accumulated rain. The C-property
+#   benchmark is topography_lake_at_rest, which holds a still lake flat to
+#   2.2e-16 through the same machinery.
+# * The vertical profile. At N = 3 the profile page shows u(z) built from
+#   three moments, departing visibly from plug flow; rainfall mixing (f_R)
+#   and bed friction both act on it.
+# * Hyperbolicity. HSWME at N = 3: both the scheme counters and the per-cell
+#   spectrum of A(U) stay on the real axis at every one of the 65120 cell
+#   records (160 cells x 407 recorded states, the initial one included), with
+#   max|Im(lambda)| = 0 exactly. See smoke_test_3 for what the plain SWME
+#   closure does at high order under the same kind of forcing.
+# ===========================================================================
 
 pde:
   type: RechargeSWME1D
-  initial_condition: horton_moment_order_pulse
+  initial_condition: horton_moment_order_pulse   # nested in N, generic in N
   viscosity: 1.0e-3
   slip_length: 1.0
   linear_source: false
-  hyperbolic: true          # HSWME closure, tests the hyperbolicity engine
+  hyperbolic: true              # HSWME closure - the right choice for N >= 2
   mixing_friction_model: admissible
-  alpha_R: 1.0              # mixing-friction coefficient for rainfall (f_R)
-  alpha_I: 0.5              # mixing-friction coefficient for infiltration (f_I)
-  rainfall_rate: 0.2        # R
+  alpha_R: 1.0                  # rainfall mixing friction, f_R = alpha_R*R
+  alpha_I: 0.0                  # f_I = alpha_I*max(0, -I) is inert under
+                                # Horton, whose I is never negative; the
+                                # exfiltration branch is exercised in
+                                # smoke_test_3 instead
+  rainfall_rate: 0.2            # R
   infiltration_type: horton
-  horton_f0: 0.24
-  horton_fc: 0.14
-  horton_k: 1.0
+  horton_f0: 0.24               # initial capacity, above R: no runoff yet
+  horton_fc: 0.05               # final capacity, well below R
+  horton_k: 3.0                 # decay rate; sets the ponding time above
 
 grid:
   x1: 0.0
   x2: 1.0
-  resolution_x: 200
+  resolution_x: 160
 
 numerics:
-  order: 2                  # N=2; horton_moment_order_pulse supports N in {0,1,2}
+  order: 3                      # N = 3: h, u_m, a1, a2, a3
   method: classical
   fvm_type: PVM
-  pvm: Roe                  # required for well-balancing over topography
+  pvm: Roe                      # required for well-balancing over topography
   time_integrator: ExplicitEuler
   boundary_condition: INFLOW_OUTFLOW
-  t_end: 1.0
+  t_end: 0.8
 
 topography:
-  bed_profile: gaussian_bump
-  amplitude: 0.1            # kept small since
-  center: 0.5
-  width: 0.1
+  # A smoothed step in the bed - a terrace edge. Swap bed_profile for any of
+  # flat | linear_slope | gaussian_bump | parabolic_bump | sinusoidal | step
+  # | tanh_step; the remaining keys are that profile's own parameters.
+  bed_profile: tanh_step
+  elevation: 0.1                # upstream bed height
+  amplitude: -0.1               # ... dropping to 0 downstream
+  position: 0.45
+  width: 0.06
   reference_water_level: 1.0
 
 wet_dry:
+  # Never reached here (h stays near 1), but the thresholds are part of the
+  # run's metadata and the report states them. Omitting the section entirely
+  # would use exactly these defaults.
   eps_div: 1.0e-14
   h_dry: 1.0e-4
   h_wet: 1.0e-3
@@ -52,5 +113,5 @@ wet_dry:
 postprocessing:
   store_history: true
   history_stride: 1
-  store_hyperbolicity: true
+  store_hyperbolicity: true     # tier-2 diagnostic: the spectrum of A(U)
   hyperbolicity_stride: 1

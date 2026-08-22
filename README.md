@@ -70,6 +70,30 @@ per-case subfolder — give each run its own `--output-dir` (as
 `scripts/run_thesis_configs.sh` does below) rather than reusing one directory across
 configs, or later runs will silently overwrite earlier ones.
 
+### Showing that it works, in three runs
+
+`src/swme/config/smoke_test_{1,2,3}.yaml` are a demonstration suite rather than a test
+fixture: between them they cover most of what the solver does, and each one's header
+comment says what to look for and quotes the numbers the run should reproduce.
+
+```bash
+scripts/run_smoke_tests.sh --report     # all three in parallel, ~2 min, PDFs included
+```
+
+| Run | Case | What it covers |
+|:--|:--|:--|
+| 1 | Rainfall-runoff over a stepped hillslope | `RechargeSWME1D` with Horton infiltration and mixing friction, HSWME at N=3, non-flat bed via the augmented `W = (U, Z)` state, Roe, explicit friction |
+| 2 | Dam break onto an exactly dry bed | wet-dry engine at a genuine vacuum front, stiff `ν/h²` friction integrated implicitly (`linear_source` + `ImplicitEuler`), Osher flux, N=2 |
+| 3 | N=5 moment hierarchy under recharge | arbitrary-order moments, exfiltration (`I < 0`) with both mixing terms, periodic domain, and the SWME-vs-HSWME hyperbolicity contrast |
+
+Between them the runs produce every page of the [run report](docs/reports.md), and each
+carries a checkable claim: run 1's mean depth is flat to the last digit until the Horton
+ponding time `t_p = ln((f0-fc)/(R-fc))/k = 0.0788` and rises after it; run 2 conserves
+mass to 2.2e-16 across a vacuum front with zero negative heights; run 3's mean depth
+rises at exactly the net source rate `R - I = 0.2`, and its per-cell spectrum is real in
+every one of 44480 records under HSWME against 615 genuinely non-hyperbolic cells when
+the same run is repeated with the plain SWME closure.
+
 ### Reproducing the thesis test cases
 
 `src/swme/config/` ships a config per test case of the thesis's Chapter 5, transcribed

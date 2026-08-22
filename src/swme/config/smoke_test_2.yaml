@@ -1,36 +1,94 @@
+# ===========================================================================
+# SMOKE TEST 2 of 3 - NUMERICAL ROBUSTNESS
+# Dam break onto an exactly dry bed, with stiff bed friction integrated
+# implicitly.
+#
+#   uv run moment-sw --config smoke_test_2 --report
+#
+# Runtime: ~70 s on one core, report included (300 cells, 96 steps).
+# ---------------------------------------------------------------------------
+# WHAT THIS RUN EXERCISES
+#
+#   wet-dry engine       a genuine vacuum front: h = 0 exactly on x > 0, not
+#                        a thin film. Before the wet-dry work the solver
+#                        raised RuntimeError the moment any height hit zero
+#   implicit source      linear_source: true + ImplicitEuler, the only path
+#                        that survives Navier-slip friction near a drying
+#                        front - nu/h^2 is stiff there and explicit
+#                        integration goes unstable (it shows up as a
+#                        negative height, which looks like a positivity
+#                        failure but is not one)
+#   Osher                the five-node path quadrature, a different flux
+#                        from the Roe used by the other two runs
+#   HSWME closure        hyperbolic: true at N = 2
+#   shock capturing      a rarefaction, a vacuum front, and moments that
+#                        must ramp to zero as the film thins
+#   diagnostics          full history plus the cell-by-cell spectrum of A(U)
+#
+# It produces every report page except the topography one. The bed is flat
+# here on purpose: a vacuum front over a sloping bed is *not* supported (the
+# bed-slope fluctuation is not positivity preserving at h -> 0, and the run
+# fails with a negative height). Topography is exercised, always wet, in
+# smoke_test_1.
+# ---------------------------------------------------------------------------
+# WHAT TO LOOK FOR
+#
+# * Positivity and mass. No cell ever goes negative - the timestep limiter
+#   guarantees it - and total mass drifts by 2.2e-16 (one ulp) over the run,
+#   with the water conjured by clamping round-off reported as exactly 0 on
+#   the wet-dry page. The dry side stays dry at h = 0 exactly, not at some
+#   small positive floor: 11764 of the 29100 cell records are dry, and the
+#   spectrum diagnostic excludes them rather than counting them as findings.
+# * The front. Ritter's inviscid front would sit at 2*sqrt(g*h0)*t = 0.40 at
+#   t_end; this one reaches x = 0.351. Both reasons are physical, not bugs:
+#   the run is *frictional*, and h_dry truncates the vanishing leading edge
+#   (on the inviscid case 1e-4 costs ~12 % of the front speed, 1e-8 ~3 %).
+#   h_dry is a modelling choice and the trade is real: it floors nu/h^2 as
+#   well, so shrinking it to 1e-10 with nu = 1e-3 would let the friction
+#   term reach nu*1e20.
+# * The wet-dry map. The three-state map on the wet-dry page shows the dry
+#   region shrinking as the front advances, with the transition band - where
+#   the moments ramp linearly to zero - two cells wide. At t_end the domain
+#   is 201 wet cells, 2 in transition and 97 dry.
+# * Hyperbolicity, both tiers. Clean at both here - 0 of 144480 interface
+#   spectra and 0 of the 17336 evaluated cells. The two are worth keeping
+#   apart anyway, and the report does: the counters eigendecompose the
+#   *path-averaged* interface matrix, which can leave the real axis at a
+#   strong enough jump even for plain shallow water, so a nonzero count
+#   there would not by itself be evidence against the model.
+# ===========================================================================
+
 pde:
   type: HSWME1D
-  initial_condition: damBreak_dryBed_partial
-  viscosity: 0.0
+  initial_condition: damBreak_dryBed    # h = 1 on x < 0, exactly 0 on x > 0
+  viscosity: 1.0e-3                     # nonzero: this is the stiff case
   slip_length: 1.0
-  linear_source: false
+  linear_source: true                   # friction as a matrix, solved...
   hyperbolic: true
 
 grid:
   x1: -1.0
   x2: 1.0
-  resolution_x: 200
+  resolution_x: 300
 
 numerics:
-  order: 1
+  order: 2
   method: classical
   fvm_type: PVM
-  pvm: Roe
-  time_integrator: ExplicitEuler
+  pvm: Osher
+  time_integrator: ImplicitEuler        # ... exactly here. The pair is
+                                        # validated at config load:
+                                        # linear_source with any other
+                                        # integrator is rejected rather than
+                                        # silently giving a wrong answer
   boundary_condition: INFLOW_OUTFLOW
   t_end: 0.2
 
-topography:
-  bed_profile: gaussian_bump
-  amplitude: 0.2
-  center: 0.0
-  width: 0.2
-  reference_water_level: 1.0
-
 wet_dry:
   eps_div: 1.0e-14
-  h_dry: 1.0e-10
-  h_wet: 1.0e-9
+  h_dry: 1.0e-4     # at/below: dry, no moments, velocity driven to zero
+  h_wet: 1.0e-3     # at/above: ordinary wet flow, no regularisation
+                    # in between: the moments ramp linearly to zero
 
 postprocessing:
   store_history: true

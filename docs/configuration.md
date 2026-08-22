@@ -178,6 +178,13 @@ C-property benchmark: still water over an uneven bed, which should stay still fo
 For `RechargeSWME1D`: `smooth_nested_profile_pulse_aggressive`,
 `smooth_nested_profile_pulse_mild`, `horton_moment_order_pulse`.
 
+All three are generic in the moment order `N` and *nested* in it: `h(x)` and `u_m(x)`
+do not depend on `N`, and each further order adds one moment without changing any below
+it, so runs at different `N` differ by the model and not by the problem. Moment `i` is
+seeded at \((-1/2)^{i-1}\) times the first-moment amplitude — a ratio deliberately kept
+clear of the non-hyperbolic wedge documented in `RESTRUCTURE_PLAN.md` §6, where what
+matters is `alpha_2/alpha_1` rather than the size of the moments.
+
 ## A complete example
 
 ```yaml

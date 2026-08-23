@@ -21,6 +21,25 @@ Check the install by running the test suite:
 uv run pytest -q
 ```
 
+## See it working
+
+Three shipped cases exist to be run and looked at. Between them they cover most of the
+solver, and each one's header comment says what to look for and quotes the numbers the
+run should reproduce.
+
+```bash
+scripts/run_smoke_tests.sh --report     # all three in parallel, ~2 min, PDFs included
+```
+
+| Case | What it demonstrates |
+|:--|:--|
+| `smoke_test_1` | Rainfall with Horton infiltration over a non-flat bed, HSWME at \(N = 3\). Mean depth is flat to the last digit until the ponding time, then rises |
+| `smoke_test_2` | A dam break onto exactly dry ground, with stiff friction integrated implicitly. Mass is conserved to \(2.2 \times 10^{-16}\) and no depth goes negative |
+| `smoke_test_3` | Five moments under rainfall and exfiltration, and the SWME-versus-HSWME hyperbolicity contrast, which is one line of the config apart |
+
+The three reports together contain every page the [report generator](reports.md) can
+produce. If something in this package is broken, one of them will say so.
+
 ## Run a case
 
 The solver is driven by YAML config files. A set of them ships inside the package.

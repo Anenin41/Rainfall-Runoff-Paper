@@ -141,6 +141,15 @@ The PDF report generator. See [Run reports](reports.md) for how to use it.
         - first_nonhyperbolic_time
         - worst_time
 
+The page layout: font metrics, wrapping, captions that take their space out of their own
+axes, and the colour helpers. See [Run reports](reports.md#how-the-pages-are-laid-out).
+
+::: swme.report.style
+    options:
+      members:
+        - ReportStyle
+        - Prose
+
 ## swme.purge
 
 The output-directory listing and cleanup tool behind `uv run purge`.
@@ -161,3 +170,20 @@ Infiltration models and the mixing friction closure.
 ## recharge.recharge_pde
 
 ::: recharge.recharge_pde
+
+## recharge.source_terms
+
+The recharge mass source and the combined friction: Navier-slip from the base model plus
+the mixing friction this extension contributes.
+
+::: recharge.source_terms
+
+## recharge.initial_conditions
+
+The three recharge benchmarks, all generic and nested in the moment order. The class
+docstring records what the seeded moment ratio is for and what it does not promise.
+
+::: recharge.initial_conditions
+    options:
+      members:
+        - RechargeSWME1D_CustomIC

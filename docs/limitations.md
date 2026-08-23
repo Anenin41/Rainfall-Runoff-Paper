@@ -1,7 +1,9 @@
 # What to watch out for
 
-Every item here was measured rather than assumed, and each is pinned by a test so it
-stays a documented property instead of being rediscovered later as a mystery.
+Every item here was measured rather than assumed. Most are pinned by a test as well, so
+they stay documented properties instead of being rediscovered later as mysteries. Two
+are not: the last two entries are reproducible from the recipes given, but no regression
+test covers them yet, and they are the two most likely to bite.
 
 ## Hyperbolicity depends on the ratio, not the size
 
@@ -110,6 +112,51 @@ and reproducing those results is the property this codebase is built to preserve
 It matters whenever a result is read at a specific time: comparing against an exact
 solution, or comparing two resolutions with each other. In those cases, read the actual
 time from the output rather than assuming it equals `t_end`.
+
+## A vacuum front over a sloping bed is not supported
+
+*Reproducible, not yet pinned by a test.*
+
+Wet-dry handling works. Topography works. Put a genuine \(h = 0\) front on a bed that
+is not flat and the run stops with a negative height.
+
+```text
+RuntimeError: Negative height produced after update at step=10, time=0.0377,
+cell=110, x=0.1055, h=-3.478e-08
+```
+
+Reproduced with `damBreak_dryBed` over a `gaussian_bump` (amplitude 0.2, centred at
+0.4), 200 cells, `Roe`, default thresholds. The same case on a flat bed completes
+normally, and switching to `Osher` changes nothing but the step it fails at.
+
+**The moment model is not at fault.** The identical failure occurs at \(N = 0\), where
+the model is plain shallow water — same step, same cell, same depth to every digit. What
+fails is the coupling: the positivity-preserving limiter bounds the flux update, but the
+bed-slope fluctuation is a separate contribution with no such guarantee, and at a
+vanishing depth over a slope it can push the cell below zero on its own.
+
+Until that is addressed, keep a vacuum front on a flat bed. `wetdry_dam_break` and
+`smoke_test_2` both do. Wet flow over a bed of any shape is unaffected, and so is a
+drying front that stays above \(h_{\text{dry}}\).
+
+## The Exact time integrator is a stub
+
+*Reproducible, not yet pinned by a test. `tests/test_cli.py` checks only that the config
+loader builds the right object, not what it then does.*
+
+`time_integrator: Exact` is accepted by the config loader and does something actively
+wrong.
+
+It is written for a source term that can report its own exactly-integrated update, and
+calls the source routine as though it returned one. No model in this package does: they
+return the source term itself. So the state is *replaced* by the source at every step
+rather than advanced by it. An inviscid case, whose source is zero, finishes with
+\(h = 0\) in every cell — a completed run, no warning, no error, and a result that is
+entirely meaningless.
+
+Use `ExplicitEuler`, or `ImplicitEuler` with `linear_source: true` where the friction is
+stiff. Nothing shipped selects `Exact`, and nothing should until a source term provides
+the closed-form update it expects.
 
 ## Well balancing depends on the scheme
 

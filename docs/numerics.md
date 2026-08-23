@@ -54,9 +54,16 @@ might appear.
 |:--|:--|
 | `ExplicitEuler` | Forward Euler on the source term. The normal choice |
 | `ImplicitEuler` | Backward Euler. Needed for stiff friction |
-| `Exact` | No source integration, for source-free cases |
+| `Exact` | A placeholder for a source with a known closed-form update. **Not usable** — see the warning below |
 
 The timestep is chosen from a CFL condition using the largest wave speed on the grid.
+
+!!! danger "`Exact` does not mean \"skip the source\""
+    It applies the source routine as though that routine returned the updated state,
+    which none of the shipped models does — they return the source term itself. The
+    state is therefore replaced by the source at every step. An inviscid run, where the
+    source is zero, ends with \(h = 0\) in every cell, and nothing raises. It is kept
+    only because a future source term could provide such an update.
 
 When `linear_source: true`, the friction term is returned as a matrix rather than a
 vector, and only `ImplicitEuler` knows how to apply it. Pairing it with any other
@@ -120,7 +127,9 @@ startup rather than a quietly wrong result.
 `tanh_step`.
 
 Each takes its own parameters, given as extra keys in the `topography` section. An
-unknown parameter name is an error, so a misspelling does not silently do nothing.
+unknown parameter name is an error, so a misspelling does not silently do nothing. The
+formula and the parameter names for each profile are listed under
+[Configuration](configuration.md#topography).
 
 ## Wet and dry cells
 
@@ -177,6 +186,15 @@ by clamping is tracked and reported, so it can be checked rather than assumed sm
     \(h_{\text{dry}}\) is not a formality to be set and forgotten. It has a measurable
     effect on results at a wetting front, and the trade-off runs in both directions.
     See [What to watch out for](limitations.md#h_dry-is-a-modelling-decision).
+
+### Dry cells and a sloping bed do not mix
+
+The limiter above governs the flux update. The bed-slope fluctuation is a separate
+contribution, and it carries no such guarantee: at a genuine \(h = 0\) front over a
+non-flat bed it can drive a nearly dry cell negative, and the run stops. Both features
+work on their own — a vacuum front on a flat bed, or wet flow of any depth over a bed —
+but the combination is outside what the scheme supports as it stands. See
+[What to watch out for](limitations.md#a-vacuum-front-over-a-sloping-bed-is-not-supported).
 
 ## Boundary conditions
 

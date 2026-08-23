@@ -79,11 +79,19 @@ Required.
 | `method` | choice | `classical` | Only `classical` exists |
 | `fvm_type` | choice | `PVM` | Only `PVM` exists |
 | `pvm` | choice | required | `Roe`, `Osher`, `LF` or `PRICE` |
-| `time_integrator` | choice | required | `ExplicitEuler`, `ImplicitEuler` or `Exact` |
+| `time_integrator` | choice | required | `ExplicitEuler` or `ImplicitEuler`. `Exact` is accepted but unusable — see below |
 | `boundary_condition` | choice | required | `PERIODIC` or `INFLOW_OUTFLOW` |
 
 See [Numerical method](numerics.md#fluctuations-instead-of-fluxes) for how the schemes
 differ and which of them are well balanced.
+
+!!! danger "Do not select `time_integrator: Exact`"
+    It is a placeholder for a source term whose exact update is known in closed form,
+    and none of the shipped models provides one. Selecting it overwrites the state with
+    the source term at every step instead of integrating anything: an inviscid case ends
+    with \(h = 0\) everywhere and no error is raised. Use `ExplicitEuler`, or
+    `ImplicitEuler` with `linear_source: true` for stiff friction. See
+    [What to watch out for](limitations.md#the-exact-time-integrator-is-a-stub).
 
 ## `topography`
 
@@ -101,17 +109,29 @@ non-augmented path.
 Any other key in this section is passed to the bed profile as a parameter. The key set
 is open for that reason, but a name the profile does not accept is still an error.
 
-Available profiles and their parameters:
+Available profiles, with the shape each one makes and the keys it accepts. Every
+parameter has a default, so a profile named with no parameters at all is valid.
 
-| Profile | Parameters |
-|:--|:--|
-| `flat` | none |
-| `gaussian_bump` | `amplitude`, `center`, `width` |
-| `parabolic_bump` | `amplitude`, `center`, `width` |
-| `linear_slope` | `slope`, `intercept` |
-| `sinusoidal` | `amplitude`, `wavelength`, `phase` |
-| `step` | `height`, `position` |
-| `tanh_step` | `height`, `position`, `width` |
+| Profile | \(Z(x)\) | Parameters (defaults) |
+|:--|:--|:--|
+| `flat` | \(e\) | `elevation` (0) |
+| `linear_slope` | \(e + s\,(x - x_r)\) | `slope` (0), `x_ref` (0), `elevation` (0) |
+| `gaussian_bump` | \(a \exp\!\left[-\left(\frac{x-c}{w}\right)^2\right]\) | `amplitude` (0.2), `center` (0.5), `width` (0.1) |
+| `parabolic_bump` | \(\max\!\left(0,\; a\left[1 - \left(\frac{x-c}{w_h}\right)^2\right]\right)\) | `amplitude` (0.2), `center` (10), `half_width` (2) |
+| `sinusoidal` | \(e + a \sin\!\left(\frac{2\pi (x - p)}{L}\right)\) | `amplitude` (0.1), `wavelength` (1), `phase` (0), `elevation` (0) |
+| `step` | \(e + a\) for \(x \geq p\), else \(e\) | `amplitude` (0.1), `position` (0.5), `elevation` (0) |
+| `tanh_step` | \(e + \frac{a}{2}\left[1 + \tanh\frac{x-p}{w}\right]\) | `amplitude` (0.1), `position` (0.5), `width` (0.05), `elevation` (0) |
+
+Three notes on the less obvious ones:
+
+- `parabolic_bump` takes a **half width**, not a width, and its defaults are sized for
+  the standard \([0, 25]\) channel benchmark rather than for a unit domain. Scale them
+  to the domain in use.
+- `step` and `tanh_step` take `amplitude`, not `height`, and a negative amplitude makes
+  a descending step. `elevation` shifts the whole bed, so `elevation: 0.1` with
+  `amplitude: -0.1` runs from 0.1 down to 0.
+- With `PERIODIC` boundaries and `sinusoidal`, pick a wavelength that divides the domain
+  length. Otherwise the periodic ghost cells introduce a bed jump at the wrap.
 
 Example:
 

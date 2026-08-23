@@ -1,34 +1,44 @@
 # Rainfall-Runoff Paper
 
 Research repository for a rainfall-runoff extension of the Shallow Water Moment (SWME)
-framework: a 1D finite-volume solver for Shallow Water Moment Equations (SWME), their
+framework: a 1D finite-volume solver for the Shallow Water Moment Equations (SWME), their
 hyperbolic-regularized variant (HSWME), and a rainfall/infiltration/exfiltration extension
-(RechargeSWME), plus the symbolic derivations and post-processing that support the
-accompanying thesis.
+(RechargeSWME), together with the configs, post-processing and run reports that reproduce
+and document the accompanying thesis's results.
 
-**This repository is under active restructuring.** See
-[`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) for the full design (arbitrary-N moment
-support, well-balanced topography, wet-dry treatment, package layout) and a checklist of
-what's done vs. still pending — read it before making structural changes, and keep it
-updated as work lands.
+The restructure that produced this layout is **complete** — arbitrary-N moment support,
+well-balanced topography, wet-dry treatment, the `swme`/`recharge` package split, the YAML
+CLI, an in-package PDF report generator and a documentation site.
+[`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) remains the design record: why each decision
+was taken, what was measured, and the defects found on the way. Read it before making
+structural changes, and keep it updated as work lands.
+
+New here? [`docs/`](docs/) is the place to start — or run the three demonstration cases in
+[Showing that it works](#showing-that-it-works-in-three-runs) and read the reports.
 
 ## Repository layout
 
 ```text
-src/swme/          # the core solver (SWME/HSWME/RechargeSWME transport, coefficients
-                   # engine, mesh, bed topography, wet-dry treatment, simulation
-                   # driver, numerical schemes)
+src/swme/          # the core solver (SWME/HSWME transport, coefficients engine, mesh,
+                   # bed topography, wet-dry treatment, simulation driver, numerical
+                   # schemes, CLI)
+src/swme/config/   # the shipped YAML cases: the thesis suite, the topography and
+                   # wet-dry benchmarks, and the three smoke tests
+src/swme/report/   # the multi-page PDF run report (`moment-sw-report`), reading CSVs
+                   # rather than a live simulation
 src/recharge/      # rainfall/infiltration/exfiltration extension, a sibling package to
                    # src/swme/ (imports from it, e.g. `from swme.pde import SWME1D`)
-scripts/           # repo-level utility scripts, e.g. run_thesis_configs.sh
+scripts/           # repo-level runners: run_thesis_configs.sh, run_smoke_tests.sh
 processing/        # downstream post-processing/plotting scripts that read solver CSV
                    # output from results/ and reproduce the thesis's Chapter 5 figures
                    # (not part of the installable package)
+docs/              # the documentation site's sources (mkdocs.yml at the repo root)
 results/           # solver output (gitignored) - CSVs and figures, organized to match
                    # what processing/*.py expect; see "Reproducing the thesis test
                    # cases" below
 tests/             # pytest suite (regression tests for the coefficients/pde/source-terms
-                   # engine, plus the topography, hyperbolicity and wet-dry suites)
+                   # engine, plus the topography, hyperbolicity, wet-dry, CLI, report
+                   # and diagnostics suites)
 ```
 
 ## Quick start
@@ -39,7 +49,7 @@ Requires [`uv`](https://docs.astral.sh/uv/).
 # Install/sync the environment (creates .venv/, resolves from pyproject.toml + uv.lock)
 uv sync
 
-# Run the test suite
+# Run the test suite (748 tests, ~4 min)
 uv run pytest -q
 
 # Run the default case (src/swme/config/config.yaml)
@@ -51,10 +61,25 @@ uv run moment-sw --list-configs
 # Run a specific case by name (or by path), with a chosen output directory
 uv run moment-sw --config thesis_5p3_pulse_N1 --output-dir results/5p3
 
+# Also write a multi-page PDF report next to the CSVs
+uv run moment-sw --config smoke_test_1 --report
+
+# Build that report later instead, from the CSVs of a finished run - or of a
+# whole tree of them - without re-running anything
+uv run moment-sw-report results/smoke_test_1
+uv run moment-sw-report results/Dry_Wet_Test
+
 # Show the interactive summary figure when the run finishes (off by default,
 # because it blocks until the window is closed)
 uv run moment-sw --config thesis_5p2_horton_at_rest --plot
+
+# List the run directories under results/ with their sizes; deleting needs an
+# explicit pattern and a confirmation
+uv run purge
 ```
+
+Three commands are installed: `moment-sw` (run a case), `moment-sw-report` (render a
+report from finished output) and `purge` (list and clean up run directories).
 
 Configs are YAML, with sections `pde`, `grid`, `numerics` (required) and
 `topography`, `wet_dry`, `postprocessing` (optional). Unknown sections and unknown keys
@@ -101,8 +126,9 @@ from its runtime-parameter tables — `thesis_5p1_mixing_aR{0,1,2}` (§5.1, rain
 validation), `thesis_5p2_horton_at_rest` (§5.2), `thesis_5p3_pulse_N{0,1,2}` (§5.3),
 `thesis_5p4_horton[_aggressive]_N{0,1,2}` (§5.4, periodic, mild and aggressive pulses),
 `thesis_5p5_horton_N{0,1,2}` (§5.5, open boundary), and
-`thesis_5p6_source_{free,active}_N{1,2}` (§5.6 ablation) — 20 configs in total, plus
-`config`, the two `topography_*` benchmarks and `wetdry_dam_break`.
+`thesis_5p6_source_{free,active}_N{1,2}` (§5.6 ablation) — 20 configs in total. The other
+seven of the 27 shipped cases are `config` (the default), the two `topography_*`
+benchmarks, `wetdry_dam_break`, and the three `smoke_test_*` demonstrations above.
 
 Run all of them, laid out under `results/` exactly as `processing/*.py` expects (see
 below), with:
@@ -226,6 +252,13 @@ Three things to know before running a drying case:
   message says so if you hit it.
 - **A config that stays wet is completely unaffected** — verified bit-identical, both on the
   reference run and by byte-comparing regenerated thesis CSVs.
+- **A vacuum front over a *sloping* bed is not supported.** Wet-dry and topography each
+  work; together, at a genuine `h = 0` front, the run stops with a negative height. The
+  bed-slope fluctuation is not positivity-preserving as `h → 0`, and it is the bed rather
+  than the moment model at fault — the failure is identical at `N = 0`, i.e. for plain
+  shallow water. Keep a vacuum front on a flat bed (as `wetdry_dam_break` and
+  `smoke_test_2` do); see
+  [What to watch out for](docs/limitations.md#a-vacuum-front-over-a-sloping-bed-is-not-supported).
 
 ### Hyperbolicity: SWME vs. HSWME
 
@@ -264,6 +297,9 @@ hyperbolicity loss**, with structural margin — their initial conditions set
 
 ## Development
 
+The suite is 748 tests and takes about four minutes in full, so most of the time a file
+or a keyword subset is the thing to run:
+
 ```bash
 # Run a single test file / a keyword-matched subset
 uv run pytest tests/test_coefficients.py -q
@@ -293,11 +329,19 @@ docstrings, so it is worth running before committing documentation changes.
 
 ## Status
 
-See [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md)'s "Execution checklist" section for the
-authoritative, up-to-date list of completed vs. pending work. As of this writing:
-scaffolding, the arbitrary-N coefficient engine, the `swme`/`recharge` sibling-package
-rename, deletion of the out-of-scope legacy models, well-balanced bottom topography and
-wet-dry treatment are all done, and the restructure has been validated against the thesis's
-own results (§5.1/§5.2 reproduce the closed-form solutions; §5.3-§5.6 reproduced
-figure-by-figure via `scripts/run_thesis_configs.sh` + `processing/*.py`). Still pending:
-cleanup, an in-package post-processing suite, and the documentation site.
+Steps 0 through 9 of [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) are complete — see its
+"Status" section for the authoritative list. In short: the solver runs entirely on the
+arbitrary-N generic engine, the out-of-scope legacy models are gone, well-balanced
+topography and wet-dry treatment are in, hyperbolicity is audited and reported, the CLI
+takes validated YAML, runs can render their own PDF report, and the documentation site is
+published from `docs/`.
+
+The restructure is validated against the thesis's own results: §5.1 and §5.2 reproduce
+their closed-form solutions, and §5.3–§5.6 were reproduced figure-by-figure via
+`scripts/run_thesis_configs.sh` + `processing/*.py`.
+
+What remains is not restructuring work but the open items in
+[`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) §7 and the measured constraints in
+[What to watch out for](docs/limitations.md) — chief among them that the solver evaluates
+the system matrix one cell at a time, which is the thing to fix before any large production
+run.

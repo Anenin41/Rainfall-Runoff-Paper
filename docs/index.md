@@ -44,14 +44,16 @@ Three models can be selected from a config file:
 
 ## Where to go next
 
-- [Quick start](quickstart.md) installs the package and runs a case.
+- [Quick start](quickstart.md) installs the package, runs a case, and points at the
+  three demonstration runs that exercise most of the solver in about two minutes.
 - [The model](model.md) sets out the equations and where each term comes from.
 - [Numerical method](numerics.md) covers the finite-volume scheme, bed topography,
   and how dry ground is handled.
 - [Configuration](configuration.md) lists every key a config file accepts.
 - [Run reports](reports.md) explains the PDF report generator.
-- [What to watch out for](limitations.md) collects measured limits of the solver.
-  Read this before trusting a number.
+- [What to watch out for](limitations.md) collects measured limits of the solver,
+  including the two combinations of settings that do not work. Read this before
+  trusting a number.
 - [API reference](api.md) is generated from the source docstrings.
 
 ## A note on this documentation

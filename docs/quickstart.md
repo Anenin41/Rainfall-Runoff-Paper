@@ -108,6 +108,16 @@ This reads the CSVs and writes `report.pdf` next to them. Because it works from 
 rather than from a live simulation, old results can be reported on without re-running
 anything. See [Run reports](reports.md).
 
+## Explore runs interactively
+
+```bash
+uv run moment-sw-view            # every run under results/, in the browser
+```
+
+A local web app over the same files: move through time, hover for values, pick where the
+vertical profile is drawn, and put several runs on the same axes. See
+[Interactive viewer](viewer.md).
+
 ## Manage output directories
 
 Runs accumulate. To see what is on disk:

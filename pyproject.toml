@@ -11,12 +11,15 @@ dependencies = [
     "sympy>=1.13",
     "mpmath>=1.3",
     "pyyaml>=6.0",
+    "dash>=3",
+    "plotly>=6",
 ]
 
 [project.scripts]
 moment-sw = "swme.cli:main"
 moment-sw-report = "swme.report.cli:main"
 purge = "swme.purge:main"
+moment-sw-view = "swme.viewer.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov"]

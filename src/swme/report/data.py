@@ -502,11 +502,16 @@ def from_directory(directory,
                    prefix: str | None = None,
                    max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
                    chunk_rows: int = DEFAULT_CHUNK_ROWS,
-                   metadata: dict | RunMetadata | None = None) -> RunData:
+                   metadata: dict | RunMetadata | None = None,
+                   hyperbolicity: bool = True) -> RunData:
     """Rebuild a `RunData` from the CSVs a run left behind.
 
     Only `{prefix}_final.csv` is required; everything else contributes if it is
     there and is noted in `warnings` if it is not.
+
+    `hyperbolicity=False` skips the per-cell spectra, which are the largest
+    files a run writes. The interactive viewer uses it to defer them until
+    they are asked for, then calls `load_hyperbolicity` itself.
     """
     directory = Path(directory)
     if not directory.is_dir():
@@ -560,7 +565,8 @@ def from_directory(directory,
     else:
         warnings.append("Field snapshots: no field history on disk.")
 
-    hyperbolicity = _load_hyperbolicity(directory, prefix, meta, warnings)
+    hyperbolicity_data = (load_hyperbolicity(directory, prefix, meta, warnings)
+                          if hyperbolicity else None)
 
     counters = None
     if meta.scheme is not None:
@@ -587,7 +593,7 @@ def from_directory(directory,
         source="directory",
         summary_history=summary,
         snapshots=snapshots,
-        hyperbolicity=hyperbolicity,
+        hyperbolicity=hyperbolicity_data,
         scheme_counters=counters,
         bed_elevation=bed,
         thresholds=thresholds,
@@ -597,8 +603,8 @@ def from_directory(directory,
     )
 
 
-def _load_hyperbolicity(directory: Path, prefix: str, meta: RunMetadata,
-                        warnings: list[str]) -> HyperbolicityData | None:
+def load_hyperbolicity(directory: Path, prefix: str, meta: RunMetadata,
+                       warnings: list[str]) -> HyperbolicityData | None:
     """Read the two hyperbolicity CSVs, under either the current or legacy name.
 
     Runs written before Step 8.5 used a hardcoded `recharge_` stem regardless of

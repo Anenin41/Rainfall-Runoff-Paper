@@ -187,3 +187,30 @@ docstring records what the seeded moment ratio is for and what it does not promi
     options:
       members:
         - RechargeSWME1D_CustomIC
+
+## swme.viewer
+
+The interactive viewer behind `moment-sw-view`. The figure builders are plain functions
+of a loaded `RunData` and can be used without the app, for example in a notebook.
+
+::: swme.viewer.catalog
+
+::: swme.viewer.store
+
+::: swme.viewer.figures
+    options:
+      members:
+        - snapshot
+        - fields_figure
+        - histories_figure
+        - space_time_figure
+        - profile_lines_figure
+        - profile_map_figure
+        - hyperbolicity_series_figure
+        - hyperbolicity_map_figure
+        - spectrum_figure
+        - wet_dry_depth_figure
+        - wet_dry_map_figure
+        - topography_figure
+
+::: swme.viewer.compare

@@ -37,6 +37,7 @@ nav:
   - Numerical method: numerics.md
   - Configuration: configuration.md
   - Run reports: reports.md
+  - Interactive viewer: viewer.md
   - What to watch out for: limitations.md
   - API reference: api.md
 

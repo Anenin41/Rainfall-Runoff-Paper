@@ -33,7 +33,7 @@ Four commands are installed:
 |:--|:--|
 | `moment-sw` | Run a case. `--report` also writes a PDF; `--plot` shows a summary figure at the end (blocks until closed) |
 | `moment-sw-report <dir>` | Build the PDF [report](docs/reports.md) from a finished run, or from every run under a tree, without re-running |
-| `moment-sw-view [dir]` | Explore finished runs in the browser: time slider, hover, zoom, runs overlaid. See [Interactive viewer](docs/viewer.md) |
+| `moment-sw-view [dir]` | Explore finished runs in the browser. See [below](#exploring-results-in-the-browser) |
 | `purge` | List run directories under `results/` with their sizes. Deleting needs an explicit pattern and a confirmation |
 
 **Configs** are YAML with required sections `pde`, `grid`, `numerics` and optional
@@ -61,6 +61,36 @@ scripts/run_smoke_tests.sh --report     # all three in parallel, ~2 min, PDFs in
 | 1 | Rainfall-runoff over a stepped hillslope | RechargeSWME, Horton infiltration, mixing friction, HSWME at N=3, non-flat bed, Roe | Mean depth is flat until the ponding time `t_p = 0.0788`, then rises |
 | 2 | Dam break onto an exactly dry bed | Wet-dry front, stiff friction integrated implicitly, Osher, N=2 | Mass conserved to 2.2e-16, no negative depths |
 | 3 | N=5 moment hierarchy under recharge | Arbitrary order, exfiltration, periodic domain, SWME vs. HSWME | Mean depth rises at exactly `R - I = 0.2`; HSWME spectrum real everywhere, plain SWME is not |
+
+## Exploring results in the browser
+
+`moment-sw-view` opens finished runs in a local web app. It shows the same data as the
+PDF report, but you can move through time, hover for values, zoom in on a front, and
+overlay runs. It only reads output on disk and never re-runs anything.
+
+```bash
+uv run moment-sw-view                        # every run under results/
+uv run moment-sw-view results/Dry_Wet_Test   # one family of runs, or a single run directory
+```
+
+It prints `http://localhost:8050/` and opens it in your browser.
+
+- **Pick a run** from the list on the left. Runs are grouped by directory, and the
+  filter box searches by name.
+- **Move through time** with the slider or ▶ to play. Every tab follows the same time.
+- **Pick a position `x`** by clicking any map or typing a value. That cell is used for
+  the vertical velocity profile, the eigenvalue spectrum and the point time series.
+- **Browse the tabs:** fields, histories, space-time maps, vertical profiles,
+  hyperbolicity, and wet-dry and topography when the run has them.
+- **Compare runs** with **Compare** at the top: add up to six runs with **+**, or a
+  whole group with **compare all**. They share axes, and colour follows the moment order.
+
+**On a remote machine,** the viewer listens on that machine only (`127.0.0.1`).
+VS Code Remote-SSH forwards port 8050 to your browser automatically. From a plain SSH
+session, run `ssh -L 8050:localhost:8050 <host>` and open `http://localhost:8050/`.
+Pass `--no-browser` there, and `--port` if 8050 is taken.
+
+See [Interactive viewer](docs/viewer.md) for every tab and option.
 
 ## Reproducing the thesis
 

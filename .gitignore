@@ -1,58 +1,110 @@
 # .gitignore file for Git #
-# Author: Konstantine Garas
+# Author: Konstantinos Garas
 # E-mail: kgaras041@gmail.com
 # Created: Mon 10 Mar 2025 @ 14:21:25 +0100
-# Modified: Sat 08 Aug 2026 @ 18:25:30 +0200
+# Modified: Mon 16 Nov 2026 @ 19:30:52 +0100
 
-### Linux ###
-*~
+# ===========================================================================
+# Generated output
+# ===========================================================================
 
-# KDE directory preferences
-.ipynb_checkpoints
+# Every run, report and processing figure is written under results/ by default
+# (moment-sw, moment-sw-report, scripts/run_*.sh and processing/*.py all
+# resolve to <repo>/results/). Anchored to the repo root on purpose.
+/results/
 
-# Python specific files
-__pycache__/
-.pytest_cache/
+# Rendered documentation: `mkdocs build` output. The sources live in docs/.
+/site/
 
-# Python virtual environment
-.venv/
-
-# Linux trash folder which might appear on any partition or disk
-.Trash-*
-
-# .nfs files are created when an open file is removed but is still being accessed
-.nfs*
-
-# ignore all executable, database or log files
+# Run output written anywhere else (for example `moment-sw -o somewhere/`).
+# The solver writes CSVs, a JSON sidecar and PDF reports; processing/*.py
+# writes PNG, SVG and PDF figures; the run scripts keep a run.log per case.
+*.csv
+*_run.json
 *.pdf
 *.png
 *.PNG
-*.gif
-*.csv
+*.svg
 *.jpg
 *.jpeg
-results/
+*.gif
+*.log
 
-# build / tool caches
-dist/
-build/
+# ...except where these file types are source, not output:
+# - test fixtures: reference values captured from the pre-refactor solver.
+#   The regression suite fails to even import without them.
+!tests/data/**
+# - images and figures used by the documentation site.
+!docs/**/*.png
+!docs/**/*.svg
+!docs/**/*.jpg
+!docs/**/*.jpeg
+!docs/**/*.gif
+
+# ===========================================================================
+# Python and uv
+# ===========================================================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environment created by `uv sync`. uv.lock IS source: keep it tracked.
+.venv/
+
+# Packaging
+/build/
+/dist/
 *.egg-info/
+
+# Test and coverage output (pytest, pytest-cov)
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+
+# Linters and type checkers
 .ruff_cache/
 .mypy_cache/
+.dmypy.json
 
-# rendered documentation (mkdocs build output; the sources live in docs/)
-site/
+# Notebooks
+.ipynb_checkpoints/
 
-# ...but the test golden fixtures ARE source, not generated output: they hold
-# reference values captured from the pre-refactor solver and the regression
-# suite fails to even import without them (see tests/test_pde_regression.py).
-!tests/data/
+# Local environment variables
+.env
+.envrc
+.direnv/
 
-# ignore language auxiliary files
-## Python
-*.pyc
+# ===========================================================================
+# Editors, agents and the operating system
+# ===========================================================================
 
-# ignore the workspace files
+# Workspace and editor settings
 *.code-workspace
-*.vscode
-*.claude
+.vscode/
+.idea/
+
+# Vim / Emacs / KDE backup and swap files
+*~
+*.swp
+*.swo
+.*.sw?
+\#*\#
+.\#*
+
+# Claude Code: local settings and per-user agent notes
+.claude/
+CLAUDE.md
+HANDOFF.md
+
+# Linux trash folders and NFS placeholders
+.Trash-*
+.nfs*
+
+# macOS / Windows, in case the repo is cloned elsewhere
+.DS_Store
+Thumbs.db

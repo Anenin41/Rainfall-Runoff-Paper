@@ -70,6 +70,12 @@ vector, and only `ImplicitEuler` knows how to apply it. Pairing it with any othe
 integrator is a silent wrong answer, so the config loader rejects the combination at
 startup instead of letting it run.
 
+`RechargeSWME1D` has no matrix form at all: its source is returned as a vector, and the
+linear branch of `ImplicitEuler` would compute `S(U) @ U`, a scalar written into every
+component. Both the config loader and the `RechargeSWME1D` constructor reject
+`linear_source: true`. For stiff recharge runs, use `ImplicitEuler` with
+`linear_source: false`, which solves the source step by Newton iteration.
+
 ## Bottom topography
 
 A sloping bed adds a source term \(g h\, \partial_x Z\) to the momentum equation, where

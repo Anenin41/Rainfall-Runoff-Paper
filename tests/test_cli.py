@@ -181,6 +181,37 @@ class TestConfigValidation:
             cli.build_pde(config, cli.build_topography(config),
                           cli.build_wet_dry(config))
 
+    def test_recharge_with_linear_source_is_rejected(self, tmp_path):
+        """RechargeSWME1D returns its source as a vector. Under the linear
+        branch of ImplicitEuler that became `S(U) @ U`, a scalar broadcast into
+        every component: a run that crashed, or silently produced garbage."""
+        recharge = (MINIMAL
+            .replace('type: SWME1D', 'type: RechargeSWME1D')
+            .replace('linear_source: false',
+                     'linear_source: true\n  rainfall_rate: 0.1\n'
+                     '  infiltration_type: constant\n'
+                     '  constant_infiltration_rate: 0.0\n'
+                     '  alpha_R: 0.0\n  alpha_I: 0.0')
+            .replace('time_integrator: ExplicitEuler',
+                     'time_integrator: ImplicitEuler'))
+        config = cli.load_config(write(tmp_path, recharge))
+        with pytest.raises(ValueError, match="RechargeSWME1D has no linear"):
+            cli.build_pde(config, cli.build_topography(config),
+                          cli.build_wet_dry(config))
+
+        # ... and the nonlinear (Newton) implicit path is still accepted
+        config = cli.load_config(write(tmp_path, recharge.replace(
+            'linear_source: true', 'linear_source: false'), name="ok.yaml"))
+        cli.build_pde(config, cli.build_topography(config), cli.build_wet_dry(config))
+
+    def test_recharge_constructor_rejects_linear_source(self):
+        from recharge.laws import AdmissibleMixingFriction, ConstantInfiltration
+        from recharge.recharge_pde import RechargeSWME1D
+        with pytest.raises(ValueError, match="linear_source=True"):
+            RechargeSWME1D('constantHeight_noVelocity', 0.0, 1.0, False, True, 0.1,
+                           ConstantInfiltration(I0=0.0),
+                           AdmissibleMixingFriction(alpha_R=0.0, alpha_I=0.0))
+
     def test_hswme_type_conflicting_with_hyperbolic_flag_is_rejected(self, tmp_path):
         path = write(tmp_path, MINIMAL.replace(
             'type: SWME1D', 'type: HSWME1D\n  hyperbolic: false'))

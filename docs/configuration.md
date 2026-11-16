@@ -20,7 +20,7 @@ Required.
 | `initial_condition` | string | required | See [Initial conditions](#initial-conditions) |
 | `viscosity` | number | required | Kinematic viscosity \(\nu\). Use `0.0` for inviscid |
 | `slip_length` | number | required | Navier-slip length \(\lambda\) |
-| `linear_source` | bool | `false` | Return friction as a matrix. Requires `ImplicitEuler` |
+| `linear_source` | bool | `false` | Return friction as a matrix. Requires `ImplicitEuler`. Not available for `RechargeSWME1D`, which is rejected with it; use `false` with `ImplicitEuler` (Newton) for stiff recharge runs |
 | `hyperbolic` | bool | from `type` | Use the HSWME closure. Implied by `type: HSWME1D` |
 
 `type: HSWME1D` and `hyperbolic: true` mean the same thing. Giving both is fine as long

@@ -97,6 +97,9 @@ This was measured across viscosities from \(10^{-4}\) upwards and across
 \(h_{\text{dry}}\) from \(10^{-4}\) to \(10^{-2}\), so it is genuine stiffness rather
 than a threshold that needs tuning. It succeeds at every setting with
 `linear_source: true` together with `ImplicitEuler`, which is what that path exists for.
+`RechargeSWME1D` has no linear source form and rejects `linear_source: true`; there, use
+`ImplicitEuler` with `linear_source: false`, which solves the source step by Newton
+iteration.
 
 The error message names this cause when it fires on a viscous explicit run.
 

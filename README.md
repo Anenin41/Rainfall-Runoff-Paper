@@ -20,7 +20,7 @@ Requires [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync                                   # create .venv/ from pyproject.toml + uv.lock
-uv run pytest -q                          # 803 tests, ~4 min
+uv run pytest -q                          # 824 tests, ~4.5 min
 
 uv run moment-sw --list-configs           # the cases shipped in src/swme/config/
 uv run moment-sw --config smoke_test_1 --report

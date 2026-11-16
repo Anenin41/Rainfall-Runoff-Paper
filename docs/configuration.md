@@ -39,13 +39,20 @@ These apply only when `type: RechargeSWME1D`.
 | `alpha_R` | number | Mixing friction coefficient for rainfall |
 | `alpha_I` | number | Mixing friction coefficient for infiltration |
 
-Horton infiltration, \(I(t) = f_c + (f_0 - f_c) e^{-kt}\):
+Horton infiltration. The capacity is \(f_p(t) = f_c + (f_0 - f_c) e^{-kt}\), and the
+realised rate is the capacity capped by the water supplied to the bed, the rain plus the
+standing water: \(I = \min\big(f_p(t),\ R + h/\Delta t\big)\). A dry bed therefore
+infiltrates \(\min(f_p, R)\), and a ponded bed infiltrates at full capacity. The legacy
+thesis closure \(I = \min\big(f_p(t),\ R,\ h/\Delta t\big)\), under which standing water
+never infiltrates, is kept behind `horton_limit_by_rainfall` so the `thesis_*` configs
+reproduce their published figures.
 
-| Key | Type | Meaning |
-|:--|:--|:--|
-| `horton_f0` | number | Initial rate \(f_0\) |
-| `horton_fc` | number | Final rate \(f_c\) |
-| `horton_k` | number | Decay constant \(k\) |
+| Key | Type | Default | Meaning |
+|:--|:--|:--|:--|
+| `horton_f0` | number | required | Initial capacity \(f_0\) |
+| `horton_fc` | number | required | Final capacity \(f_c\) |
+| `horton_k` | number | required | Decay constant \(k\) |
+| `horton_limit_by_rainfall` | bool | `false` | Use the legacy rainfall-limited closure |
 
 Constant infiltration:
 

@@ -33,7 +33,7 @@ scripts/run_smoke_tests.sh --report     # all three in parallel, ~2 min, PDFs in
 
 | Case | What it demonstrates |
 |:--|:--|
-| `smoke_test_1` | Rainfall with Horton infiltration over a non-flat bed, HSWME at \(N = 3\). Mean depth is flat to the last digit until the ponding time, then rises |
+| `smoke_test_1` | Rainfall with Horton infiltration over a non-flat bed, HSWME at \(N = 3\). The ponded bed drains into the ground while the Horton capacity exceeds the rain, so mean depth falls until \(f_p = R\), then rises |
 | `smoke_test_2` | A dam break onto exactly dry ground, with stiff friction integrated implicitly. Mass is conserved to \(2.2 \times 10^{-16}\) and no depth goes negative |
 | `smoke_test_3` | Five moments under rainfall and exfiltration, and the SWME-versus-HSWME hyperbolicity contrast, which is one line of the config apart |
 

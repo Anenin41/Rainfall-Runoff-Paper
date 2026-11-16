@@ -53,7 +53,26 @@ class AdmissibleMixingFriction:
     
 class HortonInfiltration(object):
     """
-    Simple Horton infiltration model for the first recharge test case.
+    Horton infiltration model.
+
+    Horton's law gives a capacity f_p(t); the realised rate is the smaller of
+    that capacity and the water supplied to the bed. The supply is the rain
+    plus any water standing on the bed, which over one source step of length
+    dt is
+
+        I = min( f_p(t), R + h / dt )                  (ponded, default)
+
+    so a dry bed (h = 0) infiltrates min(f_p, R), and a ponded bed with
+    enough standing water infiltrates at full capacity f_p, even when f_p > R.
+    The h / dt part also guarantees that one step never removes more water
+    than the cell holds.
+
+    The legacy closure of the thesis caps the rate by rainfall alone,
+
+        I = min( f_p(t), R, h / dt )                   (limit_by_rainfall=True)
+
+    under which standing water never feeds the ground. It is kept so that the
+    thesis configurations reproduce their published figures.
 
     Parameters
     ----------
@@ -65,14 +84,24 @@ class HortonInfiltration(object):
         Exponential decay coefficient.
     eps : float, optional
         Small positive number to avoid division by zero.
+    limit_by_rainfall : bool, optional
+        If True, use the legacy rainfall-limited closure. Default False.
     """
 
     # Constructor
-    def __init__(self, f0 : float, fc : float, k : float, eps : float = 1e-14):
+    def __init__(
+            self,
+            f0 : float,
+            fc : float,
+            k : float,
+            eps : float = 1e-14,
+            limit_by_rainfall : bool = False,
+    ):
         self.f0 = f0
         self.fc = fc
         self.k = k
         self.eps = eps
+        self.limit_by_rainfall = limit_by_rainfall
 
         if self.f0 < 0.0 or self.fc < 0.0 or self.k < 0.0:
             raise ValueError("Horton parameters must be non-negative.")
@@ -101,8 +130,12 @@ class HortonInfiltration(object):
     def rate(self, t, rainfall, h=None, dt=None):
         """
         Actual infiltration rate used in the recharge source term.
-        
-        Simplest Choice: I(t) = min( f_p(t), rainfall, h / dt )
+
+        Ponded (default):        I = min( f_p(t), R + h / dt )
+        limit_by_rainfall=True:  I = min( f_p(t), R, h / dt )
+
+        If h or dt is not given, the standing-water term is dropped and both
+        closures reduce to min( f_p(t), R ).
 
         Parameters
         ----------
@@ -123,6 +156,16 @@ class HortonInfiltration(object):
         fp = np.asarray(self.capacity(t), dtype=np.float64)
         R = np.asarray(rainfall, dtype=np.float64)
 
+        if not self.limit_by_rainfall:
+            # Ponded closure: the supply is the rain plus the standing water
+            supply = R
+            if h is not None and dt is not None:
+                h = np.asarray(h, dtype=np.float64)
+                supply = R + np.maximum(h, 0.0) / max(float(dt), self.eps)
+            I = np.maximum(np.minimum(fp, supply), 0.0)
+            return np.float64(I) if I.ndim == 0 else I
+
+        # Legacy rainfall-limited closure (thesis), unchanged
         I = np.minimum(fp, R)
 
         if h is not None and dt is not None:
@@ -164,7 +207,8 @@ class HortonInfiltration(object):
     def __repr__(self):
         return (
             f"HortonInfiltration(f0={self.f0}, fc={self.fc},  "
-            f"k={self.k}, eps={self.eps})"
+            f"k={self.k}, eps={self.eps}, "
+            f"limit_by_rainfall={self.limit_by_rainfall})"
         )
     
 class ConstantInfiltration(object):

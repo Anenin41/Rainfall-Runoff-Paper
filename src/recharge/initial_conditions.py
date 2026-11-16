@@ -258,7 +258,8 @@ class RechargeSWME1D_CustomIC(RechargeSWME1D):
 
         **A safe start is not a safe run, and this initial condition can only
         promise the first.** Measured on this case at N=4 (smoke_test_1 settings,
-        200 cells, t_end = 1.0), comparing the two closures cell by cell:
+        200 cells, t_end = 1.0, under the legacy rainfall-limited Horton
+        closure), comparing the two closures cell by cell:
 
             closure   non-hyperbolic cells   max|Im(lambda)|
             SWME      10697 / 124800         8.1e-2

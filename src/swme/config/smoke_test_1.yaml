@@ -28,18 +28,28 @@
 # ---------------------------------------------------------------------------
 # WHAT TO LOOK FOR
 #
-# * Horton ponding time. The infiltration rate is I(t) = min(f_p(t), R, h/dt)
-#   with capacity f_p(t) = fc + (f0 - fc)*exp(-k*t). While f_p > R the soil
-#   swallows the entire rainfall and the net mass source R - I is exactly
-#   zero; runoff only begins once the capacity has decayed through R, at
+# * Horton infiltration on a ponded bed. The infiltration rate is the
+#   capacity capped by the supply, rain plus standing water:
+#
+#       I = min(f_p(t), R + h/dt),   f_p(t) = fc + (f0 - fc)*exp(-k*t)
+#
+#   The bed is under water everywhere (h ~ 1), so the standing water feeds
+#   the ground and I = f_p(t) throughout. While f_p > R the soil takes more
+#   than the rain supplies, the net mass source R - I is negative and the
+#   pond drains into the ground. The capacity decays through R at
 #
 #       t_p = ln((f0 - fc)/(R - fc)) / k = ln(0.19/0.15)/3 = 0.0788
 #
-#   With these numbers the net source then climbs towards R - fc = 0.15. On
-#   the "Time histories" page, mean h holds at 1.00705 - flat to the last
-#   digit, which is also a statement about the transport - until t = 0.081,
-#   then rises to 1.0415 by t_end. That kink is the model working, not a
-#   numerical artefact.
+#   after which the source turns positive and climbs towards R - fc = 0.15.
+#   On the "Time histories" page, mean h falls from 1.00705 to its minimum,
+#   1.00549, at t = 0.0789 (the first step past t_p), then rises to 1.0400
+#   by t_end. Up to t_p it follows the explicit-Euler mass balance
+#   h0 + sum dt*(R - f_p(t_n)) to within 1e-9, and that remainder is exactly
+#   the net discharge through the two open boundaries. The dip is the
+#   infiltration law and mass conservation working, not a numerical
+#   artefact. With the legacy closure (horton_limit_by_rainfall: true,
+#   I = min(f_p, R, h/dt)) standing water never infiltrates, and the same run
+#   instead holds mean h flat until t_p.
 # * The bed. The flow accelerates over the terrace edge, and the space-time
 #   map shows the drawdown that parks itself just upstream of x = 0.45 while
 #   the two waves launched by the initial pulse run out of the domain. Note
@@ -73,9 +83,11 @@ pde:
                                 # smoke_test_3 instead
   rainfall_rate: 0.2            # R
   infiltration_type: horton
-  horton_f0: 0.24               # initial capacity, above R: no runoff yet
+  horton_f0: 0.24               # initial capacity, above R: the pond drains
   horton_fc: 0.05               # final capacity, well below R
-  horton_k: 3.0                 # decay rate; sets the ponding time above
+  horton_k: 3.0                 # decay rate; sets t_p above
+                                # horton_limit_by_rainfall omitted: the
+                                # ponded closure (the default) is used
 
 grid:
   x1: 0.0

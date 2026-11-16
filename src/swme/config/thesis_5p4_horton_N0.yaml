@@ -17,6 +17,7 @@ pde:
   horton_f0: 0.24
   horton_fc: 0.14
   horton_k: 1.0
+  horton_limit_by_rainfall: true   # legacy thesis closure I = min(f_p, R, h/dt); reproduces the published figures
 
 grid:
   resolution_x: 450

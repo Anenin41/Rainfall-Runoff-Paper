@@ -58,7 +58,7 @@ scripts/run_smoke_tests.sh --report     # all three in parallel, ~2 min, PDFs in
 
 | Run | Case | Covers | Checkable result |
 |:--|:--|:--|:--|
-| 1 | Rainfall-runoff over a stepped hillslope | RechargeSWME, Horton infiltration, mixing friction, HSWME at N=3, non-flat bed, Roe | Mean depth is flat until the ponding time `t_p = 0.0788`, then rises |
+| 1 | Rainfall-runoff over a stepped hillslope | RechargeSWME, Horton infiltration, mixing friction, HSWME at N=3, non-flat bed, Roe | Mean depth falls while the Horton capacity exceeds the rain, bottoms out at `t_p = 0.0788`, then rises |
 | 2 | Dam break onto an exactly dry bed | Wet-dry front, stiff friction integrated implicitly, Osher, N=2 | Mass conserved to 2.2e-16, no negative depths |
 | 3 | N=5 moment hierarchy under recharge | Arbitrary order, exfiltration, periodic domain, SWME vs. HSWME | Mean depth rises at exactly `R - I = 0.2`; HSWME spectrum real everywhere, plain SWME is not |
 

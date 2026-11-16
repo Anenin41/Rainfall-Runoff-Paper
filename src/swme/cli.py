@@ -72,7 +72,7 @@ _SECTION_KEYS = {
         'linear_source', 'hyperbolic',
         # recharge-only below
         'rainfall_rate', 'infiltration_type',
-        'horton_f0', 'horton_fc', 'horton_k',
+        'horton_f0', 'horton_fc', 'horton_k', 'horton_limit_by_rainfall',
         'constant_infiltration_rate', 'constant_infiltration_eps',
         'constant_limit_by_rainfall', 'constant_limit_by_available_water',
         'mixing_friction_model', 'alpha_R', 'alpha_I',
@@ -306,6 +306,8 @@ def _build_infiltration_model(section: dict):
             _number(section, 'pde', 'horton_f0'),
             _number(section, 'pde', 'horton_fc'),
             _number(section, 'pde', 'horton_k'),
+            limit_by_rainfall=_boolean(
+                section, 'pde', 'horton_limit_by_rainfall', False),
         )
     return ConstantInfiltration(
         I0=_number(section, 'pde', 'constant_infiltration_rate'),
@@ -581,6 +583,9 @@ def build_run_metadata(sim, config: dict, *, config_name=None, config_path=None,
         metadata['infiltration_type'] = _text(
             pde_section, 'pde', 'infiltration_type', 'horton').lower()
         metadata['rainfall_rate'] = _number(pde_section, 'pde', 'rainfall_rate')
+        if metadata['infiltration_type'] == 'horton':
+            metadata['horton_limit_by_rainfall'] = _boolean(
+                pde_section, 'pde', 'horton_limit_by_rainfall', False)
 
     return metadata
 

@@ -37,6 +37,18 @@ class RechargeSWME1D(SWME1D):
             topography : TopographySettings | None = None,
             wet_dry : WetDryThresholds | None = None,
     ):
+        # The recharge source S_{R,I}(U) - P(U) is affine in U and is returned
+        # as a vector; it has no matrix form. With linear_source=True,
+        # `timeIntegration.Implicit` would compute `S(U) @ U` - a scalar dot
+        # product broadcast into every component - and silently corrupt the
+        # state. Use ImplicitEuler with linear_source=False (Newton) instead.
+        if linear_source:
+            raise ValueError(
+                "RechargeSWME1D does not support linear_source=True: its source "
+                "term is a vector, not a matrix. Use linear_source=False; "
+                "ImplicitEuler then solves the source step by Newton iteration."
+            )
+
         # Inherit from the parent class stuff which are the same
         super().__init__(
             initial_condition = initial_condition,

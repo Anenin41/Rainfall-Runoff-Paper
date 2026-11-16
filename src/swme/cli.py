@@ -361,6 +361,17 @@ def build_pde(config: dict, topography, wet_dry):
             "is not importable in this environment."
         )
 
+    # The recharge source is returned as a vector and has no matrix form, so
+    # the linear branch of ImplicitEuler (`S(U) @ U`) would collapse it to a
+    # scalar written into every component - a silent wrong answer.
+    if linear_source:
+        _fail(
+            "pde.linear_source is true, but RechargeSWME1D has no linear "
+            "(matrix) source form. Set linear_source: false; with "
+            "time_integrator: ImplicitEuler the source step is then solved "
+            "by Newton iteration, which handles stiff friction on thin layers."
+        )
+
     mixing = _choice(section, 'pde', 'mixing_friction_model',
                      {'admissible'}, 'admissible')
     mixing_model = AdmissibleMixingFriction(

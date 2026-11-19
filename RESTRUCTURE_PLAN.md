@@ -988,6 +988,160 @@ duplication across the six comparison scripts; and `run_simulation` prints four 
 timestep (a 1.9 MB `run.log` for one case) while `main.py` calls a blocking `plt.show()`
 unconditionally — both hostile to batch reporting.
 
+### Step 10: implementation audit against the references
+
+Every formula of the model was typed in from the thesis and from Koellermeier and Rominger
+and compared numerically with the code; the scheme was read against Castro, Gonzalez-Vida
+and Pares (2006). The comparisons are now `tests/test_reference_equations.py` (44 tests),
+which also pins the limiting case `R = I = f_R = f_I = 0` (recharge reduces to SWME bit for
+bit), not covered before.
+
+Defects found:
+
+- **Constant infiltration ignored the rain of the step** (thesis eq. 4.12). The bound was
+  `min(I0, h/dt)` instead of `min(I0, R + h/dt)`. Fixed in `recharge/laws.py`. No thesis
+  config has `I0 > 0`, so none changes.
+- **`compute_max_wavespeed` truncated gravity with `int(g)`.** Fixed. Unchanged for the
+  default `g = 1`.
+- **The path quadrature is not Gauss-Legendre.** The five nodes in
+  `spatialDiscretization.py` are mis-transcribed (`sqrt((5 +- 2 sqrt(10/7))/3)/3` for
+  `sqrt(5 +- 2 sqrt(10/7))/3`), so the rule is exact for linear integrands only and the
+  generalised Roe property `Abar (U_R - U_L) = F(U_R) - F(U_L)` fails for jumps with a
+  velocity difference. Measured: Stoker dam break 1 : 0.1 at N = 0 has a plateau depth
+  0.6 % low that does not converge (0.39370 at 800 cells, exact 0.39617; 0.39600 with the
+  correct nodes). Jumps at rest are exact, so well-balancing and mass conservation hold.
+  **Not fixed**: it changes the golden data and every thesis result. Patch kept outside the
+  repository history for the author to decide on.
+- **Cell centres and cell width disagree.** `mesh.py` places centres with
+  `linspace(x1, x2, n)` (spacing `L/(n-1)`), the update uses `dx = L/n`. **Not fixed**, for
+  the same reason.
+- Two sign typos in the thesis text, eq. (3.50) and eq. (C.12); the code follows the
+  correct forms (3.34) and (3.30). They matter for the paper.
+
+Deliberate differences from the references, recorded rather than changed: the CFL speed
+`u_m +- sqrt(g h + sum_i alpha_i^2)` (an over-estimate for HSWME), no Harten entropy fix,
+path quadrature in place of closed-form Roe averages.
+
+### Step 11: wet/dry shoreline treatment over topography
+
+Section 2.2 argued that the augmented `(U, Z)` path needs no hydrostatic reconstruction.
+That holds only while every cell is wet. At a shoreline the bank lies above the free
+surface, the path between the two cells is not a lake at rest, and `|A~|` moves mass out
+of the dry cell: a lake with dry shores failed on step 0.
+
+The fix adapts Castro, Gonzalez-Vida and Pares (2006) to the fluctuation form and to the
+moments (`wetdry.shoreline_fluctuation`, called from the topography branch of the
+interface loop). At an interface with a dry cell whose bed step is emerged, or whose
+ordinary flux would drain the dry cell, the Riemann problem across the step is replaced by
+a wall for the lower cell (the paper's exact wall state, eqs 5.23-5.27, with the moments
+per unit depth carried unchanged) and an overfall for the higher cell (the flat-bed
+problem against a dry state, with the scheme's own solver). Mass rows are in flux form,
+one flux per interface.
+
+Design decisions and why:
+
+- **Triggered per interface, never for two wet cells or a flat step**, so every existing
+  result is unchanged bit for bit. `wet_dry.shoreline_treatment: false` exists for the
+  negative controls.
+- **Exact wall instead of a linearised one.** A mirror-state Roe solve was tried first.
+  It is generic in N but over-estimates the wall pressure for receding flow (62 % at
+  Fr = -0.5) and accelerated the drying edge.
+- **Moments unchanged at the wall.** Zeroing them disturbs a uniformly sheared layer at
+  rest in the mean, which is a steady solution.
+- **Regularised states.** A drained cell can keep momentum without water; reading it as a
+  discharge drained empty cells.
+
+Measured: lake at rest with dry shores held to 1.1e-16 over more than 200 steps (N = 0, 1,
+2; Roe and Osher); Thacker sloshing first-order convergent (mean L1 depth error 0.0193,
+0.0091, 0.0051 at 60, 120, 240 cells); Castro Test 1 reproduced to four digits with
+correct quadrature nodes and 5.6 % low with the shipped ones (the Step 10 defect); Castro
+Test 2 runs up and down the slope, the uphill front 24 % slow at dx = 0.05 because an
+emerged cell is a wall until the water behind it is deeper than the step (the paper's
+Cases 3.2 and 3.3 are not implemented). 154 tests in `tests/test_shoreline.py`.
+Superseded in part by Step 13, which completes the paper's case analysis.
+
+### Step 12: rain fills a lake until it overtops a dam
+
+The case the shoreline treatment was needed for, shipped as
+`src/swme/config/rain_fills_lake_overtops_dam.yaml`. What it needed:
+
+- `topography.basin_dam`: a Gaussian ridge, a level floor, a Gaussian dam and a valley
+  falling away below it. The bank is a ridge, not a plateau, on purpose: the first version
+  had a level bank top at the left boundary, and the zero-gradient boundary fed the rain
+  film standing there into the domain (10 % of the rain without infiltration). A ridge is
+  a divide, so the boundary beyond it only lets water out.
+- `lakeWithDryShores`: `h = max(H - Z, 0)` between `lake_left` and `lake_right`, exactly
+  dry elsewhere. The extent is needed because the valley below the dam lies below the
+  lake level. `lakeAtRest` keeps refusing dry cells and now says where to go.
+- `postprocessing.store_mass_budget` (off by default): total mass against the cumulative
+  source, the two boundary fluxes and clamping, with the residual. Boundary fluxes come
+  from the fluctuations of the end interfaces, `F = q_left + D-[0]`.
+- **Dry cells are reset to their desingularised state** after each step when the
+  shoreline treatment is on (`wetdry.regularised_state`). Found with the no-infiltration
+  variant: a film of depth 1e-6 kept a velocity of order 1e5, an ordinary flat interface
+  exported that as discharge, and the run stopped with a negative depth at t = 3.7. This
+  is the consistency step of the Kurganov-Petrova desingularisation. It is confined to
+  runs over topography with the treatment on, so flat-bed wet-dry results are unchanged.
+- `h_dry = 1e-3` in the config. With `1e-5` the rain films on the banks count as wet,
+  drain through the ordinary scheme and the positivity limiter cuts the timestep to 1e-5.
+
+Measured (g = 1 units, 200 cells, t = 25): the lake falls from 0.400 to 0.3825 at the
+ponding time 2.357 (closed form 0.3826), rises, passes the crest (0.4987) at t = 16.98,
+and has spilled 0.0182 by t = 25; the mass budget closes to 1.9e-13. Without infiltration
+it overtops at t = 7.24 and spills 0.2716; with a soil twice as absorbent it does not
+reach the crest by t = 25. 26 tests in `tests/test_lake_overtopping.py`.
+
+### Step 13: the shoreline treatment completed against Castro et al. (2006), Section 5
+
+Step 11 implemented the paper's wall (Case 3.1) on geometric emergence only, and replaced
+the overfall (Case 2) by a flat-bed linearised Riemann problem. An audit against the
+paper found three gaps:
+
+- **Case 3.2 was missing.** Supercritical flow with the energy to climb an emerged step
+  was walled off. Castro Test 2 uphill ran 24 % slow, against 14 % on a flat bed.
+- **Case 2 lost the bed force.** The overfall was posed on a flat bed, so the momentum the
+  water gains falling over the step, \(F(W_1) - F(W_0) = g \int h \, dH\) on the
+  stationary contact, was dropped.
+- **HSWME momentum flux at the wall.** The wall used all moments in
+  \(F_{\text{mom}}\), but HSWME assembles the momentum row with \(\alpha_1\) only. At
+  N >= 2 the wall's flux was not the model's (its gradient differs from \(A(U)\)'s
+  momentum row by up to 0.4 on random states).
+
+The treatment is now built from the paper's nonlinear Riemann problems throughout
+(`wetdry.one_sided_problem`): the interface problem is split into the lower cell's water
+facing a rise (Case 3.1 wall, 3.2 climb, 3.3 ordinary) and the higher cell's water facing
+a drop (Case 2: the vacuum-edge state (5.8) and the state below the step on the same
+contact). The interface states give the fluctuations through eq. (5.1): flux differences
+in the mass and momentum rows, the scheme's path integral in the moment rows. The
+derivation and the case table are in `docs/numerics.md`.
+
+Decisions and why:
+
+- **The wall needs the bed to emerge.** The paper's (5.20) condition for Case 3.1, read
+  literally, also walls off submerged dry beds. It raised the Thacker error from
+  0.0118 / 0.0058 / 0.0037 to 0.0278 / 0.0111 / 0.0088 (60 / 120 / 240 cells, half a
+  period). The paper's Fig. 8(b) draws the bed emerged.
+- **Supercritical root below a drop, always.** The paper takes the subcritical root when
+  the edge state is critical. That state has \(u - c < 0\), which contradicts the
+  wave structure it is supposed to belong to (the rarefaction to the dry bed would run
+  back through the step), and it hands the dry cell a momentum of order \(g s^2/2\)
+  with almost no water. On the lake case it raised the largest velocity from 1.00 to 1.66.
+- **Case 1 (flat wet/dry interfaces) is not used.** Measured on Castro Test 2 flat, it
+  moves the front speed from 1.711 to 1.732 (exact 2.000), not enough to change every
+  flat-bed wet/dry result.
+- **One function for the momentum flux**, `wetdry.momentum_flux`, tested against the
+  momentum row of \(A(U)\) for SWME and HSWME, N = 0 to 3.
+
+Measured: the lake at rest with dry shores is still exact (at most 2.2e-16); Castro Test 1
+is unchanged (pure wall); Castro Test 2 front speed at dx = 0.05, uphill -24.4 % to
+-17.4 %, downhill -16.2 % to -10.3 %, flat unchanged at -14.4 %. Thacker over one period
+is unchanged at N = 0 (0.0196 / 0.0091 / 0.0051) and improves at N = 1 (0.0347 to 0.0250)
+and N = 2 (0.0451 to 0.0379). The lake case changes in the third or fourth digit
+(overtopping at t = 16.99 instead of 16.98, spill 0.0186 instead of 0.0182). Its mass
+budget still closes, to 4.6e-13. `tests/test_shoreline.py`: 222 tests (was 154), with
+mutation checks: the subcritical root, the literal Case 3.1 reading, removing the climb
+and the all-moment HSWME flux each make tests fail.
+
 ---
 
 ## 6. Findings and limitations

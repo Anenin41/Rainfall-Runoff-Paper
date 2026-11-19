@@ -52,7 +52,7 @@ Three models can be selected from a config file:
 - [Configuration](configuration.md) lists every key a config file accepts.
 - [Run reports](reports.md) explains the PDF report generator.
 - [What to watch out for](limitations.md) collects measured limits of the solver,
-  including the two combinations of settings that do not work. Read this before
+  including the settings that do not work. Read this before
   trusting a number.
 - [API reference](api.md) is generated from the source docstrings.
 

@@ -35,6 +35,11 @@ results tree, one family of runs, or a single run directory. Nothing is re-run. 
 By default the viewer is reachable only from your own machine. It serves whatever is
 under the directory you give it, so pass `--host 0.0.0.0` only on a network you trust.
 
+**On a remote machine,** the viewer listens on that machine only. VS Code Remote-SSH
+forwards port 8050 to your browser automatically. From a plain SSH session, run
+`ssh -L 8050:localhost:8050 <host>` and open `http://localhost:8050/`. Pass
+`--no-browser` there, and `--port` if 8050 is taken.
+
 ## The layout
 
 The **run list** on the left groups runs by the directory they sit in. Under

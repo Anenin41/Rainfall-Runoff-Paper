@@ -1,9 +1,8 @@
 # What to watch out for
 
 Every item here was measured rather than assumed. Most are pinned by a test as well, so
-they stay documented properties instead of being rediscovered later as mysteries. Two
-are not: the last two entries are reproducible from the recipes given, but no regression
-test covers them yet, and they are the two most likely to bite.
+they stay documented properties instead of being rediscovered later as mysteries. Where
+an entry is reproducible but not pinned, it says so.
 
 ## Hyperbolicity depends on the ratio, not the size
 
@@ -116,31 +115,92 @@ It matters whenever a result is read at a specific time: comparing against an ex
 solution, or comparing two resolutions with each other. In those cases, read the actual
 time from the output rather than assuming it equals `t_end`.
 
-## A vacuum front over a sloping bed is not supported
+## Shorelines over topography: what is and is not covered
 
-*Reproducible, not yet pinned by a test.*
+Dry ground next to wet ground over a non-flat bed used to stop the run with a negative
+depth: a lake with dry shores failed on its first step, and so did a dam break over a
+bump or down a slope. The [shoreline treatment](numerics.md#shorelines-over-topography)
+handles these. Everything below was measured with it, in the code's units (\(g = 1\)),
+and is pinned in `tests/test_shoreline.py`, each case with a negative control that
+fails when the treatment is switched off.
 
-Wet-dry handling works. Topography works. Put a genuine \(h = 0\) front on a bed that
-is not flat and the run stops with a negative height.
+| Case | Result |
+|:--|:--|
+| Lake at rest in a parabolic bowl, dry shores, more than 200 steps | Depth changes by at most \(2.2 \times 10^{-16}\); no mass created by clamping. \(N = 0, 1, 2\), `Roe` and `Osher` |
+| Sloshing in a parabolic bowl (Thacker's planar solution), one period | Mass drift below \(6 \times 10^{-16}\), no negative depth. Mean \(L^1\) error of the depth, relative to the volume: 2.6 % at 60 cells, 1.2 % at 120, 0.7 % at 240 (`Roe`, \(N = 0\)), so first order. With a uniform first moment \(0.2 h\): 3.4 % at \(N = 1\), 5.1 % at \(N = 2\) (60 cells; the exact solution is the \(N = 0\) one) |
+| Dry dam break over a Gaussian bump (amplitude 0.2), 200 cells | Runs; mass change exactly 0. This is the case that used to fail at step 10 |
+| Castro et al. Test 1, shock reflected by an emerged step | The step stays exactly dry and the inflow is fully accounted for. The reflected depth is 4.845 against an exact 5.131, 5.6 % low. With the correct Gauss-Legendre nodes it is 5.1305: the deficit is the [quadrature defect](#the-path-quadrature-is-not-gauss-legendre), not the treatment |
+| Castro et al. Test 2, dam break over a plane inclined by \(\pm\pi/60\), \(\Delta x = 0.05\) | Runs both ways, mass conserved to round-off. Front speed: downhill 1.85 against 2.06 (10 % slow), flat bed 1.71 against 2.00 (14 % slow), uphill 1.60 against 1.94 (17 % slow). At \(\Delta x = 0.025\): downhill 12 %, flat 14 %, uphill 15 % slow. Relative to the flat front the exact slope effect is \(-3.0\) % uphill and \(+2.9\) % downhill; measured \(-6.4\) % and \(+7.8\) % at \(\Delta x = 0.05\), \(-4.7\) % and \(+5.7\) % at 0.025 |
 
-```text
-RuntimeError: Negative height produced after update at step=10, time=0.0377,
-cell=110, x=0.1055, h=-3.478e-08
-```
+What to keep in mind:
 
-Reproduced with `damBreak_dryBed` over a `gaussian_bump` (amplitude 0.2, centred at
-0.4), 200 cells, `Roe`, default thresholds. The same case on a flat bed completes
-normally, and switching to `Osher` changes nothing but the step it fails at.
+- **A front on a dry slope still lags.** Most of the lag is the flat-bed one: the
+  first-order scheme at a vacuum front, read off at \(h = 10^{-3}\), which is there
+  without any bed and barely shrinks with the mesh. The slope adds to it, uphill and
+  downhill, by a few percent that do shrink with the mesh (see the table). Before the
+  paper's Cases 2 and 3.2 were implemented (2026-11-19), an emerged dry cell was a wall
+  until the water behind it was deeper than the step, and the uphill front was 24 %
+  slow.
+- **Three deliberate departures from the paper**, all argued and measured in
+  [Numerical method](numerics.md#shorelines-over-topography): the wall of Case 3.1
+  needs the bed to emerge; below a drop the supercritical state is used in every case,
+  where the paper takes the subcritical one when the edge state is critical; flat
+  wet/dry interfaces keep the ordinary fluctuation instead of the paper's Case 1.
+- **The interface states are modelling choices for \(N \geq 1\).** Every depth (wall,
+  climb, overfall) is the exact shallow-water one, computed from the depth-averaged
+  velocity, and the moments per unit depth are carried into every interface state
+  unchanged. For \(N = 0\) this is the scheme of the paper. For higher orders there is
+  no reference to compare against.
+- **Only interfaces with a dry cell are treated.** A thin layer that is still above
+  \(h_{\text{dry}}\), perched on a bed step above deeper water, keeps the ordinary
+  fluctuation. It then drains quickly and the positivity limiter cuts the timestep
+  while it does. This costs time rather than correctness. Over one period of the
+  sloshing run at 60 cells the smallest timestep is 180 times below the largest with
+  `Roe` and 150 times with `Osher` at \(N = 0\), and 300 and 250 times with `Roe` at
+  \(N = 1\) and \(N = 2\) (measured 2026-11-19; before Castro's Cases 2 and 3.2 were
+  implemented the \(N = 2\) run fell to \(9 \times 10^{-6}\) against
+  \(5 \times 10^{-2}\) for a few steps).
+- **`h_dry` matters more here than on a flat bed.** A cell is handed to the treatment
+  when it drops to \(h_{\text{dry}}\), so choose it well below the depths of interest.
+- **`LF` and `PRICE` are not well balanced** with or without dry shores.
 
-**The moment model is not at fault.** The identical failure occurs at \(N = 0\), where
-the model is plain shallow water — same step, same cell, same depth to every digit. What
-fails is the coupling: the positivity-preserving limiter bounds the flux update, but the
-bed-slope fluctuation is a separate contribution with no such guarantee, and at a
-vanishing depth over a slope it can push the cell below zero on its own.
+## The path quadrature is not Gauss-Legendre
 
-Until that is addressed, keep a vacuum front on a flat bed. `wetdry_dam_break` and
-`smoke_test_2` both do. Wet flow over a bed of any shape is unaffected, and so is a
-drying front that stays above \(h_{\text{dry}}\).
+*Measured in the implementation audit. Not fixed, because fixing it changes every
+reference result.*
+
+The fluctuation at an interface is the integral of the system matrix along the straight
+path between the two cell states. The code evaluates it with five nodes and the
+Gauss-Legendre weights, but the nodes are mis-transcribed: on \([-1, 1]\) they sit at
+\(\pm 0.5232\), \(\pm 0.3109\) and 0 instead of \(\pm 0.9062\), \(\pm 0.5385\) and 0. The
+rule integrates \(s^2\) over \([0, 1]\) to 0.2778 instead of 1/3, so it is exact for linear
+integrands only.
+
+What this does and does not affect:
+
+- A jump between two states at rest is integrated exactly, because the matrix is then
+  linear in \(h\). Well-balancing and mass conservation are unaffected.
+- A jump with a velocity difference is not. For \((h, q) = (1, 0.5) \to (0.2, -0.3)\) at
+  \(N = 0\) the momentum fluctuation sums to \(-0.628\) where the flux difference is
+  \(-0.280\). Momentum is therefore not conserved exactly across strong shocks.
+- For the Stoker dam break with depths 1 and 0.1, the plateau depth is 0.39370 at 800
+  cells against an exact 0.39617, and the 0.6 % gap does not close under refinement. With
+  the correct nodes the same run gives 0.39600. For the milder 2 to 1 dam break the two
+  agree to four digits.
+
+Smooth solutions are affected at higher order only, since the jumps between neighbouring
+cells shrink with the mesh.
+
+## Cell centres and cell width disagree
+
+*Measured in the implementation audit. Not fixed, for the same reason.*
+
+The mesh places its \(n\) cell centres with `linspace(x1, x2, n)`, a spacing of
+\((x_2 - x_1)/(n - 1)\), while the finite-volume update uses the cell width
+\((x_2 - x_1)/n\). Positions (initial conditions, bed sampling, the `x` column of the
+output) and the update therefore disagree by a factor \(n/(n-1)\): 1.005 at 200 cells.
+Wave speeds and bed slopes read from the output carry that factor. It vanishes as
+\(1/n\).
 
 ## The Exact time integrator is a stub
 

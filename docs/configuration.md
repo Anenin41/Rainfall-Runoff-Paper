@@ -61,7 +61,7 @@ Constant infiltration:
 | `constant_infiltration_rate` | number | required | The rate \(I_0\) |
 | `constant_infiltration_eps` | number | `1e-14` | Guard against removing water from an empty cell |
 | `constant_limit_by_rainfall` | bool | `false` | Cap the rate at the rainfall rate |
-| `constant_limit_by_available_water` | bool | `true` | Never remove more water than is present |
+| `constant_limit_by_available_water` | bool | `true` | For \(I_0 > 0\), cap the rate at the water available over one step: \(I = \min(I_0,\ R + h/\Delta t)\) (thesis eq. 4.12). With `constant_limit_by_rainfall: true` the cap is \(\min(I_0,\ R,\ h/\Delta t)\) |
 
 ## `grid`
 
@@ -112,6 +112,8 @@ non-augmented path.
 | `perturbation_amplitude` | number | `0.0` | Size of the initial disturbance |
 | `perturbation_center` | number | `0.0` | Where it sits |
 | `perturbation_width` | number | `1.0` | How wide it is |
+| `lake_left` | number | unbounded | Left end of the water body of `lakeWithDryShores` |
+| `lake_right` | number | unbounded | Right end of the water body of `lakeWithDryShores` |
 
 Any other key in this section is passed to the bed profile as a parameter. The key set
 is open for that reason, but a name the profile does not accept is still an error.
@@ -128,8 +130,9 @@ parameter has a default, so a profile named with no parameters at all is valid.
 | `sinusoidal` | \(e + a \sin\!\left(\frac{2\pi (x - p)}{L}\right)\) | `amplitude` (0.1), `wavelength` (1), `phase` (0), `elevation` (0) |
 | `step` | \(e + a\) for \(x \geq p\), else \(e\) | `amplitude` (0.1), `position` (0.5), `elevation` (0) |
 | `tanh_step` | \(e + \frac{a}{2}\left[1 + \tanh\frac{x-p}{w}\right]\) | `amplitude` (0.1), `position` (0.5), `width` (0.05), `elevation` (0) |
+| `basin_dam` | \(b \exp\!\left[-\left(\frac{x-x_b}{w_b}\right)^2\right] + d \exp\!\left[-\left(\frac{x-x_d}{w_d}\right)^2\right] - s \max(x - x_d,\, 0)\) | `bank_height` \(b\) (0.6), `bank_position` \(x_b\) (1), `bank_width` \(w_b\) (0.6), `dam_height` \(d\) (0.5), `dam_position` \(x_d\) (6), `dam_width` \(w_d\) (0.4), `downstream_slope` \(s\) (0.05) |
 
-Three notes on the less obvious ones:
+Notes on the less obvious ones:
 
 - `parabolic_bump` takes a **half width**, not a width, and its defaults are sized for
   the standard \([0, 25]\) channel benchmark rather than for a unit domain. Scale them
@@ -139,6 +142,11 @@ Three notes on the less obvious ones:
   `amplitude: -0.1` runs from 0.1 down to 0.
 - With `PERIODIC` boundaries and `sinusoidal`, pick a wavelength that divides the domain
   length. Otherwise the periodic ghost cells introduce a bed jump at the wrap.
+- `basin_dam` is a basin between a ridge on the left and a dam on the right, with the
+  bed falling away below the dam. The ridge crest is a divide: put the left boundary
+  beyond it and water on the outer slope leaves the domain instead of being fed in.
+  `dam_position` must lie to the right of `bank_position`. It is the bed of the shipped
+  `rain_fills_lake_overtops_dam` case.
 
 Example:
 
@@ -161,6 +169,7 @@ that leaves this out behaves as though wet-dry handling did not exist.
 | `eps_div` | number | `1e-14` | Division guard. Not a physical quantity |
 | `h_dry` | number | `1e-4` | At or below this a cell is dry |
 | `h_wet` | number | `1e-3` | At or above this a cell is ordinary wet flow |
+| `shoreline_treatment` | bool | `true` | Treat wet-dry interfaces across a bed step with the modified Roe scheme of Castro et al. (2006): a wall, a climb onto the step or an overfall, from the exact shallow-water Riemann problem. See [Numerical method](numerics.md#shorelines-over-topography). Only acts over non-flat topography; `false` restores the untreated scheme, which produces negative depths at a shoreline |
 
 They must satisfy `eps_div <= h_dry < h_wet`, and this is checked.
 
@@ -180,6 +189,7 @@ Optional.
 | `store_history` | bool | `true` | Store the state at intervals |
 | `history_stride` | integer | `1` | Store every Nth step |
 | `store_hyperbolicity` | bool | `false` | Record the eigenvalues of \(A(U)\) in every cell |
+| `store_mass_budget` | bool | `false` | Write `<stem>_mass_budget.csv`: per stored step, the total mass and the cumulative mass added by the sources, entering at the left end, leaving at the right end and created by clamping, with the residual of that balance |
 | `hyperbolicity_stride` | integer | `1` | Record every Nth step |
 
 `store_hyperbolicity` is expensive. It builds and eigendecomposes a matrix in every
@@ -195,10 +205,17 @@ Available for `SWME1D` and `HSWME1D`:
 `colliding_damBreak`, `linearDamBreak_noVelocity`, `linearHeight_noVelocity`,
 `smooth_wave`, `smooth_constantVelocity`, `smooth_plus_damBreak`,
 `smooth_wave_smallHeightGradient`, `damBreak_dryBed`, `damBreak_dryBed_partial`,
-`lakeAtRest`, `perturbedLakeAtRest`.
+`lakeAtRest`, `perturbedLakeAtRest`, `lakeWithDryShores`.
 
 `lakeAtRest` and `perturbedLakeAtRest` need a `topography` section. The first is the
 C-property benchmark: still water over an uneven bed, which should stay still forever.
+Both require the bed to be covered everywhere.
+
+`lakeWithDryShores` also needs a `topography` section. It is a lake at rest that does
+not cover the whole bed: \(h = \max(H - Z,\ 0)\) between `lake_left` and `lake_right`
+and exactly dry outside, with \(H\) the `reference_water_level`. Give the extent when
+ground beyond a divide lies below \(H\), as the valley below a dam does. It relies on
+the [shoreline treatment](numerics.md#shorelines-over-topography) to stay at rest.
 
 `damBreak_dryBed` releases water onto ground with \(h = 0\) exactly, not a thin film.
 

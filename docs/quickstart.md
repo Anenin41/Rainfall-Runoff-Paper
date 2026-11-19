@@ -86,6 +86,7 @@ for example `swme_N2` or `recharge_hswme_N1_horton`.
 | `<stem>_field_history.csv` | The full state at every stored step. This is the large one |
 | `<stem>_run.json` | What the run did: model, scheme, thresholds, bed profile, timings |
 | `<stem>_hyperbolicity_*.csv` | Diagnostics, only when `store_hyperbolicity` is on |
+| `<stem>_mass_budget.csv` | Total mass against sources and boundary fluxes, only when `store_mass_budget` is on |
 
 The history files are written only when `store_history` is on, which is the default.
 
@@ -170,3 +171,82 @@ itself instead of quietly falling back to a default. Every key is listed in
     `1.0e-3` is a number, but `1.0e3` is parsed as a **string**. Write `1.0e+3`. The
     config loader catches the common cases and reports the rule, but it is easier to
     avoid.
+
+## Reproduce the thesis
+
+`src/swme/config/` ships one config per Chapter 5 test case, transcribed from the thesis's
+parameter tables. Run them all, laid out under `results/` the way `processing/` expects:
+
+```bash
+scripts/run_thesis_configs.sh          # sequential
+scripts/run_thesis_configs.sh -j 4     # 4 in parallel
+scripts/run_thesis_configs.sh 5p3      # only configs whose name contains "5p3"
+```
+
+Then regenerate the figures from `processing/`. Each script's docstring lists the exact
+figures it produces, and output goes under `results/<Section>/..._Figures/`:
+
+```bash
+cd processing
+MPLBACKEND=Agg uv run python ersoy_alpha_comparison.py
+```
+
+| Section | Configs | Plotting scripts | Results directory |
+|:--|:--|:--|:--|
+| 5.1 Rainfall-mixing validation | `thesis_5p1_mixing_aR{0,1,2}` | `ersoy_alpha_comparison.py` | `Ersoy/ErsoyData{0,1,2}/` |
+| 5.2 Horton at rest | `thesis_5p2_horton_at_rest` | `plotter.py` (driven by `config.ini`) | `5p2_Horton_At_Rest/` |
+| 5.3 Non-wrapping pulse | `thesis_5p3_pulse_N{0,1,2}` | `non_wrapping_pulse_model_comparison.py`, `plot_non_wrapping_zoom_profiles.py` | `Non_Wrapping_Pulse/` |
+| 5.4 Periodic pulses | `thesis_5p4_horton[_aggressive]_N{0,1,2}` | `smooth_pulse_model_comparison_cases.py` | `Smooth_Pulse/` |
+| 5.5 Open boundary | `thesis_5p5_horton_N{0,1,2}` | `inflow_outflow_comparison.py` | `Smooth_Pulse_Inflow_Outflow/` |
+| 5.6 Source ablation | `thesis_5p6_source_{free,active}_N{1,2}` | `dry_wet_ablation_comparison.py`, `zoomed_dry_wet_comparison.py` | `Dry_Wet_Test/` |
+
+In section 5.6, `Dry`/`Wet` means source-free/source-active. The name predates, and is
+unrelated to, the solver's wet-dry treatment.
+
+Sections 5.1 and 5.2 match the thesis's closed-form solutions: eq. (5.5) for all three
+`alpha_R` branches, and eqs. (5.9) and (5.10) with transition time \(t^* = 510.8\)
+(thesis: about 511) and final depth 1.1694. Sections 5.3 to 5.6 were reproduced figure by
+figure. The Horton thesis configs are pinned to the thesis's rainfall-limited closure
+with `horton_limit_by_rainfall: true`; see [Configuration](configuration.md).
+
+The other shipped cases are the default `config`, the `topography_lake_at_rest` and
+`topography_perturbed_lake` benchmarks, `wetdry_dam_break`, the three smoke tests, and
+`rain_fills_lake_overtops_dam`: rain filling a lake with dry banks until it spills over
+a dam, with Horton infiltration. Its header comment quotes the lake level over time,
+the overtopping time, the spilled volume and the closed mass budget.
+
+## Develop
+
+```bash
+uv run pytest tests/test_coefficients.py -q     # one file
+uv run pytest -k "closed_form" -q               # a keyword subset
+
+uv add <package>                                # runtime dependency
+uv add --group dev <package>                    # dev-only dependency
+
+uv sync --group docs
+uv run mkdocs serve                             # docs preview at http://127.0.0.1:8000
+uv run mkdocs build --strict                    # fails on broken links and bad docstrings
+```
+
+Run `mkdocs build --strict` before committing documentation changes.
+
+The repository is laid out as follows:
+
+```text
+src/swme/          core solver: transport, coefficients engine, mesh, topography,
+                   wet-dry, schemes, simulation driver, CLI
+src/swme/config/   shipped YAML cases
+src/swme/report/   PDF run report (moment-sw-report), built from CSVs
+src/swme/viewer/   browser viewer (moment-sw-view, Dash + Plotly), same loader as the report
+src/recharge/      rainfall/infiltration/exfiltration extension, built on swme
+scripts/           run_thesis_configs.sh, run_smoke_tests.sh
+processing/        thesis Chapter 5 plotting scripts (not part of the package)
+docs/              documentation site sources (mkdocs.yml at the repo root)
+results/           solver output (gitignored)
+tests/             pytest suite
+```
+
+`RESTRUCTURE_PLAN.md` at the repository root records why each design decision was taken,
+what was measured, and the defects found on the way. Read it before changing the
+structure, and keep it updated as work lands.

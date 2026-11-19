@@ -3,7 +3,7 @@
 # Rainfall-runoff into a basin with dry banks, Horton infiltration, and a
 # spill over the dam into a dry valley.
 #
-#   uv run moment-sw --config rain_fills_lake_overtops_dam --report
+#   uv run experiment --config rain_fills_lake_overtops_dam --report
 #
 # Runtime: about 3 minutes on one core (200 cells, 941 steps).
 # ---------------------------------------------------------------------------

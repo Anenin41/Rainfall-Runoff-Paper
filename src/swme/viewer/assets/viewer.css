@@ -104,6 +104,8 @@ button { font-family: inherit; color: inherit; }
   font-size: 14px;
 }
 .icon-button:hover { background: var(--accent-wash); }
+.icon-button:disabled { color: var(--axis); cursor: not-allowed; background: var(--surface); }
+.text-button { font-size: 12px; padding: 0 8px; }
 
 .link-button {
   border: none;

@@ -25,7 +25,7 @@
 # is no such penalty here. Rule of thumb: put h_dry well below the smallest
 # depth you need to resolve, then check that nu/h_dry^2 is still sane.
 #
-# Run with:  uv run moment-sw --config wetdry_dam_break
+# Run with:  uv run experiment --config wetdry_dam_break
 
 pde:
   type: SWME1D

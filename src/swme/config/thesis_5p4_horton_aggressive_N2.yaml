@@ -1,6 +1,6 @@
 # Thesis test case: 5.4 Mild periodic Horton pulse, N=2
 # Reproduces the runtime parameters of Table 4 in the thesis.
-# Run with:  uv run moment-sw --config thesis_5p4_horton_N2
+# Run with:  uv run experiment --config thesis_5p4_horton_N2
 
 pde:
   type: RechargeSWME1D

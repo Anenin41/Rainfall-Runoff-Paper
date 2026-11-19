@@ -3,7 +3,7 @@
 # A high-order (N = 5) recharge run driven by rainfall *and* exfiltration,
 # on a periodic domain.
 #
-#   uv run moment-sw --config smoke_test_3 --report
+#   uv run experiment --config smoke_test_3 --report
 #
 # Runtime: ~85 s on one core, report included (160 cells, 277 steps).
 # ---------------------------------------------------------------------------

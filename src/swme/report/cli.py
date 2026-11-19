@@ -1,4 +1,4 @@
-"""`moment-sw-report` - build a PDF report from a run directory.
+"""`uv run report` (alias `moment-sw-report`) - build a PDF report from a run directory.
 
 Separate from `moment-sw --report` so the 20 thesis runs already sitting in
 `results/` can be reported on without re-running anything, which for the larger
@@ -11,6 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ..commands import invoked_as
 from ..purge import find_runs
 from .data import from_directory
 from .history import DEFAULT_CHUNK_ROWS, DEFAULT_MAX_SNAPSHOTS
@@ -18,7 +19,7 @@ from .history import DEFAULT_CHUNK_ROWS, DEFAULT_MAX_SNAPSHOTS
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog='moment-sw-report',
+        prog=invoked_as('moment-sw-report'),
         description='Render a multi-page PDF report from a run directory '
                     'written by moment-sw.',
     )

@@ -1,6 +1,6 @@
 # Thesis test case: 5.6 Moment-cascade ablation, source-free, N=2
 # Reproduces the runtime parameters of Table 6 in the thesis.
-# Run with:  uv run moment-sw --config thesis_5p6_source_free_N2
+# Run with:  uv run experiment --config thesis_5p6_source_free_N2
 
 pde:
   type: RechargeSWME1D

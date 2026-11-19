@@ -10,7 +10,7 @@
 # numerical viscosity has a nonzero constant term), and the solver warns if you
 # select one here. See spatialDiscretization.SpatialDiscretization.
 #
-# Run with:  uv run moment-sw --config topography_lake_at_rest
+# Run with:  uv run experiment --config topography_lake_at_rest
 
 pde:
   type: SWME1D

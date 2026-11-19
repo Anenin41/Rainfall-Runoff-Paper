@@ -4,7 +4,7 @@
 # velocity profile.
 #
 #   scripts/run_smoke_tests.sh --report        # runs all three, writes PDFs
-#   uv run moment-sw --config smoke_test_1 --report
+#   uv run experiment --config smoke_test_1 --report
 #
 # Runtime: ~110 s on one core, report included (160 cells, 406 steps).
 # ---------------------------------------------------------------------------

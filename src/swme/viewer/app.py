@@ -4,7 +4,8 @@ Two shared cursors drive every view:
 
 - **time** - one slider over a time grid (the selected run's stored steps, or
   in compare mode every run's steps inside their common range). It is moved by
-  dragging, by the play button, and by clicking any space-time map.
+  dragging, by the play button, and by clicking any space-time map. Playing
+  runs in the browser (`assets/playback.js`): see "playback" below.
 - **position** - an `x` that picks the cell for the vertical profile, the
   spectrum and the point time series. Blank means "a sensible default"; it is
   set by typing or by clicking a map.
@@ -17,11 +18,14 @@ changed, a heavy figure is sent a new cursor (`Patch`) instead of rebuilt.
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import numpy as np
 from _plotly_utils.utils import to_typed_array_spec
-from dash import ALL, Dash, Input, Output, Patch, State, ctx, dcc, html, no_update
+from dash import (ALL, ClientsideFunction, Dash, Input, Output, Patch, State, ctx, dcc,
+                  html, no_update)
 
 from ..report.hyperbolicity import STALE_SUMMARY_NOTE, model_level_lines, scheme_counter_lines
 from ..report.style import Prose
@@ -35,9 +39,9 @@ ASSETS = Path(__file__).parent / "assets"
 GRAPH_CONFIG = {"displaylogo": False,
                 "toImageButtonOptions": {"format": "svg", "scale": 1}}
 MAX_TIME_GRID = 400
-PLAY_INTERVAL_MS = 300
-SPEEDS = {"0.25×": 1200, "0.5×": 600, "1×": PLAY_INTERVAL_MS, "2×": 150}
-COMPARE_MIN_INTERVAL_MS = 300
+PLAY_INTERVAL_MS = 50
+SPEEDS = {"0.25×": 200, "0.5×": 100, "1×": PLAY_INTERVAL_MS, "2×": 25}
+FRAME_BUDGET_S = 0.4
 MAP_GRAPHS = ("space-time-graph", "wet-dry-map-graph", "hyperbolicity-map-graph")
 
 TABS = [("overview", "Overview"), ("fields", "Fields"), ("histories", "Histories"),
@@ -322,16 +326,40 @@ def view_wet_dry_counts(store: RunStore, key: str, t):
                      html.Table(html.Tbody(rows), className="kv")], className="card")
 
 
-def play_interval(speed: str | None, mode: str | None) -> int:
-    """Milliseconds between frames.
+def gif_availability(store: RunStore, mode: str | None, key: str | None):
+    """`(disabled, tooltip)` for the GIF button."""
+    if mode == "compare":
+        return True, "GIF export is for a single run: switch to Single run"
+    run, error = load(store, key)
+    if run is None:
+        return True, "no run loaded"
+    if run.snapshots is None:
+        return True, ("this run has no field history to animate "
+                      "(postprocessing.store_history: true)")
+    return False, (f"download the {len(run.snapshots.times)} stored steps as an animated "
+                   "GIF at the chosen speed (rendered on request: about 10 s for 400 "
+                   "steps of a 200-cell run)")
 
-    A compare frame redraws four multi-run figures, ~200 ms of server work,
-    so compare mode never ticks faster than `COMPARE_MIN_INTERVAL_MS`: a tick
-    that arrives before the last frame is drawn only queues up behind it,
-    and playback would then lag the slider instead of keeping pace.
+
+def gif_filename(run) -> str:
+    """`<run directory>_<file prefix>.gif`, safe as a file name."""
+    stem = "_".join(part for part in (Path(run.directory).name if run.directory else "",
+                                      run.prefix or "") if part) or "run"
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in stem) + ".gif"
+
+
+def play_interval(speed: str | None, mode: str | None) -> int:
+    """Milliseconds between frames while playing: 20 frames a second at 1×.
+
+    The same in both modes. Frames are drawn in the browser from a buffer the
+    server fills ahead of the cursor, and the player waits for a frame that
+    has not arrived rather than skipping it, so a speed the server cannot
+    keep up with only plays at the speed it can. Measured on the 200-cell
+    lake run, the server builds about 18 frames a second for the Fields tab,
+    11 for Profiles and 20 for Topography; frames already buffered play at
+    the chosen speed.
     """
-    interval = SPEEDS.get(speed or "", PLAY_INTERVAL_MS)
-    return max(interval, COMPARE_MIN_INTERVAL_MS) if mode == "compare" else interval
+    return SPEEDS.get(speed or "", PLAY_INTERVAL_MS)
 
 
 def transport(trigger, index, grid, current, playing: bool, clicked_t=None):
@@ -341,6 +369,10 @@ def transport(trigger, index, grid, current, playing: bool, clicked_t=None):
     stored step rather than wrapping, so the end state stays on screen; play
     pressed there starts again from the first. Stepping pauses playback, so a
     step is never immediately overtaken by the next tick.
+
+    The `player` tick is applied in the browser (`assets/playback.js`, which
+    follows the same rule: one step on, stopping on the last), not here; the
+    branch stays as the specification it follows.
     """
     grid = grid or [0.0]
     last = len(grid) - 1
@@ -406,6 +438,9 @@ def _timebar():
                         title="one stored step forward"),
             dcc.Dropdown(id="speed", value="1×", clearable=False, searchable=False,
                          options=list(SPEEDS), className="speed"),
+            html.Button("GIF", id="gif-export", className="icon-button text-button",
+                        n_clicks=0, disabled=True),
+            dcc.Download(id="gif-download"),
         ], className="transport"),
         html.Div(dcc.Slider(id="time-index", min=0, max=0, step=1, value=0,
                             marks=None, updatemode="mouseup"), className="slider"),
@@ -496,6 +531,11 @@ def build_layout(store: RunStore):
         dcc.Store(id="time-grid", data=[0.0]),
         dcc.Store(id="current-t"),
         dcc.Store(id="cursor-x"),
+        # playback in the browser: see "playback" above
+        dcc.Store(id="frame-context"),
+        dcc.Store(id="frame-request"),
+        dcc.Store(id="frame-batch"),
+        dcc.Store(id="frame-ack"),
         html.Header([
             html.Div([html.Span("moment-sw-view", className="brand"),
                       html.Span(str(store.root), className="muted root")]),
@@ -530,19 +570,23 @@ def _with_revision(figure, revision: str):
 FRAME_PROPS = ("x", "y", "z", "name")
 
 
-def _frame_patch(figure):
-    """Send a new frame as data, not as a new figure.
+def _frame_data(figure) -> dict:
+    """A frame as plain data: `{"data": {trace index: {prop: value}}, "layout":
+    {"title", "annotations", "shapes"}}`, or `{"figure": ...}` for a
+    placeholder.
 
     For a fixed run and fixed controls a builder's trace list does not depend
     on `t` (tests hold every patched builder to that), so moving in time only
     changes trace data, the titles that quote `t`, and the cursor shapes.
     Axes are never touched: the fixed run-wide ranges and any zoom stay put.
     A placeholder is a different figure altogether and is always sent whole.
+    This is what both `_frame_patch` and the browser player draw.
     """
     if fig.is_placeholder(figure):
-        return figure
-    patch = Patch()
+        return {"figure": figure.to_plotly_json()}
+    data = {}
     for index, trace in enumerate(figure.data):
+        props = {}
         for prop in FRAME_PROPS:
             if prop in trace and trace[prop] is not None:
                 value = trace[prop]
@@ -553,11 +597,28 @@ def _frame_patch(figure):
                     value = to_typed_array_spec(value)
                 elif isinstance(value, tuple):
                     value = list(value)
-                patch["data"][index][prop] = value
-    patch["layout"]["title"]["text"] = figure.layout.title.text
-    patch["layout"]["annotations"] = [note.to_plotly_json()
-                                      for note in figure.layout.annotations]
-    patch["layout"]["shapes"] = [shape.to_plotly_json() for shape in figure.layout.shapes]
+                props[prop] = value
+        if props:
+            data[index] = props
+    return {"data": data,
+            "layout": {"title": {"text": figure.layout.title.text},
+                       "annotations": [note.to_plotly_json()
+                                       for note in figure.layout.annotations],
+                       "shapes": [shape.to_plotly_json() for shape in figure.layout.shapes]}}
+
+
+def _frame_patch(figure):
+    """Send a new frame as data, not as a new figure (see `_frame_data`)."""
+    if fig.is_placeholder(figure):
+        return figure
+    frame = _frame_data(figure)
+    patch = Patch()
+    for index, props in frame["data"].items():
+        for prop, value in props.items():
+            patch["data"][index][prop] = value
+    patch["layout"]["title"]["text"] = frame["layout"]["title"]["text"]
+    patch["layout"]["annotations"] = frame["layout"]["annotations"]
+    patch["layout"]["shapes"] = frame["layout"]["shapes"]
     return patch
 
 
@@ -565,6 +626,124 @@ def _cursor_patch(shapes):
     patch = Patch()
     patch["layout"]["shapes"] = shapes
     return patch
+
+
+# ---------------------------------------------------------------------------
+# playback
+# ---------------------------------------------------------------------------
+#
+# Playing is driven from the browser (`assets/playback.js`): it moves the
+# slider and draws each stored step itself, from frames this server builds
+# ahead of the cursor. A frame is built here by the same builders, with the
+# same arguments, as the time-only update of each tab's callback below, so a
+# played frame is the picture the paused view would show at that time. The
+# text panels (wet-dry counts, topography caption) and the time-only updates
+# of hidden tabs are redrawn when playback stops.
+
+# The controls a frame depends on, as `(component, property)`, and the names
+# `playback_frame` reads them under.
+FRAME_CONTROLS = (("mode", "value"), ("selected", "data"), ("tabs", "value"),
+                  ("fields-mode", "value"), ("cursor-x", "data"),
+                  ("hyperbolicity-map-kind", "value"), ("theme", "data"),
+                  ("compare-set", "data"), ("compare-reference", "value"),
+                  ("compare-field", "value"), ("compare-point-field", "value"))
+FRAME_CONTROL_NAMES = ("mode", "key", "tab", "fields_mode", "x", "kind", "theme",
+                       "compare_set", "reference", "field", "point_field")
+
+
+def frame_controls(values) -> dict:
+    return dict(zip(FRAME_CONTROL_NAMES, values))
+
+
+def frame_context(grid, controls: dict) -> str:
+    """A key for the frames buffered in the browser: any change of the time
+    grid or of a control invalidates them."""
+    grid = grid or [0.0]
+    return json.dumps([len(grid), grid[0], grid[-1], *controls.values()], default=str)
+
+
+def _shapes(shapes) -> dict:
+    return {"layout": {"shapes": shapes}}
+
+
+def playback_frame(store: RunStore, t: float, controls: dict) -> dict:
+    """`{graph id: part}` for the views on screen at time `t` (see
+    `_frame_data` for a part). Graphs a time change does not alter are left
+    out."""
+    palette = themes.get(controls["theme"])
+    x = controls["x"]
+    if controls["mode"] == "compare":
+        items = compared(store, controls["compare_set"])
+        if not items:
+            return {}
+        return {
+            "compare-histories-graph": _shapes(cmp.histories_cursor(items, t, palette)),
+            "compare-fields-graph": _frame_data(cmp.fields_figure(items, t, palette,
+                                                                  frame=True)),
+            "compare-difference-graph": _frame_data(cmp.difference_figure(
+                items, controls["reference"] or 0, controls["field"] or "h", t, palette,
+                frame=True)[0]),
+            "compare-profiles-graph": _frame_data(cmp.profiles_figure(items, x, t, palette,
+                                                                      frame=True)),
+            "compare-point-graph": _frame_data(cmp.point_series_figure(
+                items, x, controls["point_field"] or "h", t, palette, frame=True)[0]),
+        }
+    key, tab = controls["key"], controls["tab"]
+    run, _ = load(store, key)
+    if run is None:
+        return {}
+    if tab == "fields":
+        if controls["fields_mode"] == "final":
+            return {}
+        return {"fields-graph": _frame_data(fig.fields_figure(run, t, palette, frame=True))}
+    if tab == "histories":
+        return {"histories-graph": _shapes(fig.histories_cursor(run, t, palette))}
+    if tab == "space-time":
+        return {"space-time-graph": _shapes(fig.space_time_cursor(run, t, palette))}
+    if tab == "profiles":
+        return {"profile-lines-graph": _frame_data(
+                    fig.profile_lines_figure(run, t, x, palette, frame=True)),
+                "profile-map-graph": _frame_data(
+                    fig.profile_map_figure(run, t, x, "velocity", palette, frame=True)),
+                "profile-deviation-graph": _frame_data(
+                    fig.profile_map_figure(run, t, x, "deviation", palette, frame=True))}
+    if tab == "hyperbolicity":
+        view = store.hyperbolicity(key)
+        spectra = view.run.hyperbolicity
+        cells = spectra.cells if spectra is not None else None
+        tolerance = spectra.tolerance if spectra is not None else 1e-10
+        spectrum = _with_revision(fig.spectrum_figure(cells, tolerance, t, x, palette),
+                                  f"{key}:spectrum")
+        return {"hyperbolicity-series-graph": _shapes(
+                    fig.hyperbolicity_series_cursor(view.derived, t, palette)),
+                "hyperbolicity-map-graph": _shapes(
+                    fig.hyperbolicity_map_cursor(t, palette)
+                    if cells is not None and len(cells) else []),
+                "spectrum-graph": {"figure": spectrum.to_plotly_json()}}
+    if tab == "wet-dry":
+        return {"wet-dry-depth-graph": _frame_data(
+                    fig.wet_dry_depth_figure(run, t, palette, frame=True)),
+                "wet-dry-map-graph": _shapes(fig.space_time_cursor(run, t, palette))}
+    if tab == "topography":
+        return {"topography-graph": _frame_data(
+                    fig.topography_figure(run, t, palette, frame=True))}
+    return {}
+
+
+def frame_batch(store: RunStore, grid, request, controls: dict,
+                budget: float = FRAME_BUDGET_S) -> dict:
+    """The frames `request` asks for (`start`, `count`), as many as fit in
+    `budget` seconds of server work (always at least one), so a batch never
+    holds the player up for long; the player asks again from where it ends."""
+    grid = grid or [0.0]
+    start = min(max(int(request.get("start", 0)), 0), len(grid) - 1)
+    stop = min(len(grid), start + max(int(request.get("count", 1)), 1))
+    frames, began = [], time.perf_counter()
+    for index in range(start, stop):
+        frames.append(playback_frame(store, float(grid[index]), controls))
+        if time.perf_counter() - began > budget:
+            break
+    return {"context": frame_context(grid, controls), "start": start, "frames": frames}
 
 
 def create_app(root=None, *, store: RunStore | None = None, **store_options) -> Dash:
@@ -674,13 +853,19 @@ def create_app(root=None, *, store: RunStore | None = None, **store_options) -> 
     @app.callback(Output("time-index", "value"), Output("current-t", "data"),
                   Output("player", "disabled"), Output("play", "children"),
                   Input("time-index", "value"), Input("time-grid", "data"),
-                  Input("player", "n_intervals"), Input("play", "n_clicks"),
+                  Input("play", "n_clicks"),
                   Input("step-back", "n_clicks"), Input("step-forward", "n_clicks"),
                   *(Input(graph, "clickData") for graph in MAP_GRAPHS),
                   State("current-t", "data"), State("player", "disabled"))
     def _time(index, grid, *rest):
         current, paused = rest[-2], rest[-1]
         trigger = ctx.triggered_id
+        if trigger == "time-index" and paused is False:
+            # Playing: the browser moved the slider and has drawn that step
+            # already. Publishing the time would redraw every view on the
+            # server, the round trip per frame that playback avoids. The time
+            # is published when playback stops (`assets/playback.js`).
+            return no_update, no_update, no_update, no_update
         point = None
         if trigger in MAP_GRAPHS:
             point = ((ctx.triggered[0]["value"] or {}).get("points") or [{}])[0].get("y")
@@ -697,10 +882,42 @@ def create_app(root=None, *, store: RunStore | None = None, **store_options) -> 
     def _speed(speed, mode):
         return play_interval(speed, mode)
 
-    @app.callback(Output("time-label", "children"), Input("current-t", "data"),
+    @app.callback(Output("time-label", "children"),
                   Input("time-index", "value"), Input("time-grid", "data"))
-    def _time_label(t, index, grid):
-        return f"t = {fig.fmt(t, '.5g')}   ({(index or 0) + 1} / {len(grid or [0])})"
+    def _time_label(index, grid):
+        # From the slider, not from `current-t`, which is not published while
+        # playing; the two agree whenever the time is published.
+        grid = grid or [0.0]
+        index = int(min(max(index or 0, 0), len(grid) - 1))
+        return f"t = {fig.fmt(float(grid[index]), '.5g')}   ({index + 1} / {len(grid)})"
+
+    @app.callback(Output("frame-context", "data"), Input("time-grid", "data"),
+                  *(Input(component, prop) for component, prop in FRAME_CONTROLS))
+    def _frame_context(grid, *controls):
+        return frame_context(grid, frame_controls(controls))
+
+    @app.callback(Output("frame-batch", "data"), Input("frame-request", "data"),
+                  State("time-grid", "data"),
+                  *(State(component, prop) for component, prop in FRAME_CONTROLS),
+                  prevent_initial_call=True)
+    def _frames(request, grid, *controls):
+        if not request:
+            return no_update
+        return frame_batch(store, grid, request, frame_controls(controls))
+
+    app.clientside_callback(
+        ClientsideFunction("swmePlayback", "tick"),
+        Output("time-index", "value", allow_duplicate=True),
+        Output("player", "disabled", allow_duplicate=True),
+        Output("play", "children", allow_duplicate=True),
+        Output("frame-request", "data"),
+        Input("player", "n_intervals"), State("time-index", "value"),
+        State("time-grid", "data"), State("player", "disabled"),
+        State("frame-context", "data"), prevent_initial_call=True)
+    app.clientside_callback(
+        ClientsideFunction("swmePlayback", "merge"),
+        Output("frame-ack", "data"), Input("frame-batch", "data"),
+        prevent_initial_call=True)
 
     @app.callback(Output("cursor-x", "data"), Output("x-input", "value"),
                   Input("x-input", "value"),
@@ -718,6 +935,25 @@ def create_app(root=None, *, store: RunStore | None = None, **store_options) -> 
             return no_update, no_update
         value = round(float(point["x"]), 6)
         return value, value
+
+    # -- GIF export ----------------------------------------------------
+    @app.callback(Output("gif-export", "disabled"), Output("gif-export", "title"),
+                  Input("mode", "value"), Input("selected", "data"))
+    def _gif_available(mode, key):
+        return gif_availability(store, mode, key)
+
+    @app.callback(Output("gif-download", "data"), Input("gif-export", "n_clicks"),
+                  State("selected", "data"), State("mode", "value"), State("speed", "value"),
+                  prevent_initial_call=True,
+                  running=[(Output("gif-export", "disabled"), True, False),
+                           (Output("gif-export", "children"), "…", "GIF")])
+    def _gif(clicks, key, mode, speed):
+        if not clicks or gif_availability(store, mode, key)[0]:
+            return no_update
+        from ..report.animation import gif_bytes      # matplotlib, only when asked
+        run, _ = load(store, key)
+        return dcc.send_bytes(gif_bytes(run, frame_ms=play_interval(speed, mode)),
+                              gif_filename(run))
 
     # -- single-run tabs -----------------------------------------------
     @app.callback(Output("overview", "children"),
@@ -943,6 +1179,6 @@ def create_app(root=None, *, store: RunStore | None = None, **store_options) -> 
 
 
 __all__ = ["create_app", "build_layout", "time_grid", "compared", "load",
-           "transport", "play_interval",
+           "transport", "play_interval", "gif_availability", "gif_filename", "playback_frame", "frame_batch", "frame_context",
            "view_run_list", "view_overview", "view_hyperbolicity_text",
            "view_topography_caption", "view_wet_dry_counts", "lines_to_html"]

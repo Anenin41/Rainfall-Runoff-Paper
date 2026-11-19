@@ -1,6 +1,6 @@
 # Thesis test case: 5.2 Horton infiltration under constant rainfall (water at rest)
 # Reproduces the runtime parameters of Table 2 in the thesis.
-# Run with:  uv run moment-sw --config thesis_5p2_horton_at_rest
+# Run with:  uv run experiment --config thesis_5p2_horton_at_rest
 
 pde:
   type: RechargeSWME1D

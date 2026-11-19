@@ -3,7 +3,7 @@
 # Dam break onto an exactly dry bed, with stiff bed friction integrated
 # implicitly.
 #
-#   uv run moment-sw --config smoke_test_2 --report
+#   uv run experiment --config smoke_test_2 --report
 #
 # Runtime: ~70 s on one core, report included (300 cells, 96 steps).
 # ---------------------------------------------------------------------------

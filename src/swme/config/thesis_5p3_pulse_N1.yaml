@@ -1,6 +1,6 @@
 # Thesis test case: 5.3 Symmetric constant rainfall-exfiltration pulse, N=1
 # Reproduces the runtime parameters of Table 3 in the thesis.
-# Run with:  uv run moment-sw --config thesis_5p3_pulse_N1
+# Run with:  uv run experiment --config thesis_5p3_pulse_N1
 
 pde:
   type: RechargeSWME1D

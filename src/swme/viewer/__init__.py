@@ -1,6 +1,6 @@
 """Interactive browser for run output (`moment-sw-view`).
 
-    uv run moment-sw-view results/
+    uv run visual results/
 
 A local Dash app over the same data layer the PDF report uses
 (`swme.report.data.RunData`), so the two can never disagree about what a run

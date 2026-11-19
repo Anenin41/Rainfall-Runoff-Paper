@@ -7,7 +7,7 @@
 # waves of its own - the free-surface deviation must stay of the order of the
 # perturbation amplitude (1e-3 here), not of the bed amplitude (0.4).
 #
-# Run with:  uv run moment-sw --config topography_perturbed_lake
+# Run with:  uv run experiment --config topography_perturbed_lake
 
 pde:
   type: SWME1D

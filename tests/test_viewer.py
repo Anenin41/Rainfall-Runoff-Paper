@@ -16,6 +16,8 @@ worse than no view:
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import shutil
@@ -26,8 +28,10 @@ import pytest
 
 import plotly.graph_objects as go
 from dash import dcc
+from plotly.utils import PlotlyJSONEncoder
 
 from swme import cli
+from swme.report import animation
 from swme.report import data as report_data
 from swme.report.hyperbolicity import recompute_summary
 from swme.report.style import Prose
@@ -438,6 +442,12 @@ def test_report_text_becomes_html():
 
 
 def _post(app, output, inputs, changed):
+    response = _post_raw(app, output, inputs, changed)
+    assert response.status_code == 200, response.data[:500]
+    return response.get_json()["response"]
+
+
+def _post_raw(app, output, inputs, changed):
     spec = app.callback_map[output]
     def dep(d):
         return {"id": d["id"], "property": d["property"],
@@ -449,9 +459,7 @@ def _post(app, output, inputs, changed):
                "inputs": [dep(d) for d in spec["inputs"]],
                "state": [dep(d) for d in spec["state"]],
                "changedPropIds": changed}
-    response = app.server.test_client().post("/_dash-update-component", json=payload)
-    assert response.status_code == 200, response.data[:500]
-    return response.get_json()["response"]
+    return app.server.test_client().post("/_dash-update-component", json=payload)
 
 
 def test_a_time_only_change_is_sent_as_a_cursor_patch(store, dry):
@@ -668,10 +676,255 @@ def test_transport_steps_clamp_and_stop_at_the_end():
 
 
 def test_play_interval():
-    assert viewer_app.play_interval("2×", "single") == 150
-    assert viewer_app.play_interval("2×", "compare") == viewer_app.COMPARE_MIN_INTERVAL_MS
-    assert viewer_app.play_interval("0.25×", "compare") == 1200
-    assert viewer_app.play_interval(None, "single") == viewer_app.PLAY_INTERVAL_MS
+    """Frames are drawn in the browser from a buffer, so compare mode no
+    longer needs a slower clock: the player waits for a frame instead."""
+    assert viewer_app.play_interval("2×", "single") == 25
+    assert viewer_app.play_interval("2×", "compare") == 25
+    assert viewer_app.play_interval("0.25×", "compare") == 200
+    assert viewer_app.play_interval(None, "single") == viewer_app.PLAY_INTERVAL_MS == 50
+
+
+# ---------------------------------------------------------------------------
+# playback in the browser: frames built on the server, drawn by playback.js
+# ---------------------------------------------------------------------------
+
+def _decoded(value):
+    """A typed-array spec as the array it encodes; anything else unchanged."""
+    if isinstance(value, dict) and set(value) >= {"dtype", "bdata"}:
+        array = np.frombuffer(base64.b64decode(value["bdata"]), dtype=value["dtype"])
+        if "shape" in value:
+            array = array.reshape([int(n) for n in str(value["shape"]).split(",")])
+        return array
+    return value
+
+
+def _played(figure: dict, part: dict) -> dict:
+    """What `drawPart` in playback.js puts on screen: `figure` with the frame
+    `part` merged into it."""
+    if "figure" in part:
+        return part["figure"]
+    # JSON object keys are strings; `changes[index]` in JavaScript reads them
+    # with a number, as `str(index)` does here.
+    changes = part.get("data") or {}
+    data = [dict(trace, **changes.get(str(index), {}))
+            for index, trace in enumerate(figure["data"])]
+    layout = dict(figure["layout"])
+    for key, value in (part.get("layout") or {}).items():
+        layout[key] = dict(layout.get("title") or {}, **value) if key == "title" else value
+    return {"data": data, "layout": layout}
+
+
+def _picture(figure: dict) -> list:
+    """The parts of a figure a time change may alter."""
+    traces = [[np.asarray(_decoded(trace.get(prop)), dtype=object).tolist()
+               if trace.get(prop) is not None else None for prop in viewer_app.FRAME_PROPS]
+              for trace in figure["data"]]
+    layout = figure["layout"]
+    return [traces, (layout.get("title") or {}).get("text"),
+            json.dumps(layout.get("annotations") or [], sort_keys=True, default=str),
+            json.dumps(layout.get("shapes") or [], sort_keys=True, default=str)]
+
+
+def _as_json(figure) -> dict:
+    return json.loads(json.dumps(figure.to_plotly_json(), cls=PlotlyJSONEncoder))
+
+
+PLAYED_VIEWS = {
+    "fields": [("fields-graph", lambda run, t: figures.fields_figure(run, t))],
+    "profiles": [("profile-lines-graph", lambda run, t: figures.profile_lines_figure(run, t)),
+                 ("profile-map-graph", lambda run, t: figures.profile_map_figure(run, t)),
+                 ("profile-deviation-graph",
+                  lambda run, t: figures.profile_map_figure(run, t, kind="deviation"))],
+    "wet-dry": [("wet-dry-depth-graph", lambda run, t: figures.wet_dry_depth_figure(run, t)),
+                ("wet-dry-map-graph", lambda run, t: figures.wet_dry_map_figure(run, t))],
+    "topography": [("topography-graph", lambda run, t: figures.topography_figure(run, t))],
+    "histories": [("histories-graph", lambda run, t: figures.histories_figure(run, t))],
+    "space-time": [("space-time-graph", lambda run, t: figures.space_time_figure(run, "h", t))],
+}
+
+
+def _controls(**overrides):
+    controls = dict(mode="single", key=None, tab="fields", fields_mode="t", x=None,
+                    kind="magnitude", theme="light", compare_set=[], reference=0,
+                    field="h", point_field="h")
+    controls.update(overrides)
+    return controls
+
+
+# Every tab a run has that changes with time (wet-dry needs a run that went
+# dry, topography a bed).
+PLAYED_CASES = ([(name, tab) for name in ("Dry_N2", "Lake_N1")
+                 for tab in ("fields", "profiles", "histories", "space-time")]
+                + [("Dry_N2", "wet-dry"), ("Lake_N1", "topography")])
+
+
+@pytest.mark.parametrize("name, tab", PLAYED_CASES)
+def test_a_played_frame_is_the_paused_view(store, name, tab):
+    """The screen at the start of playback, with the frame for a later time
+    drawn into it, shows exactly what the paused view shows at that time:
+    the same trace data, titles, annotations and cursors."""
+    key = _key(store, name)
+    run = store.run(key)
+    assert (tab != "wet-dry" or run.went_dry) and (tab != "topography"
+                                                    or run.has_topography)
+    early, late = float(run.snapshots.times[1]), float(run.snapshots.times[-2])
+    frame = viewer_app.playback_frame(store, late, _controls(key=key, tab=tab))
+    assert sorted(frame) == sorted(graph for graph, _ in PLAYED_VIEWS[tab])
+    for graph, build in PLAYED_VIEWS[tab]:
+        before, after = _as_json(build(run, early)), _as_json(build(run, late))
+        played = _played(before, json.loads(json.dumps(frame[graph], cls=PlotlyJSONEncoder)))
+        assert _picture(played) == _picture(after), graph
+        # Negative control: without the frame the screen would be wrong.
+        assert _picture(before) != _picture(after), graph
+
+
+def test_a_played_compare_frame_is_the_paused_view(store, dry):
+    keys = [_key(store, "Dry_N2"), _key(store, "Lake_N1")]
+    items = viewer_app.compared(store, keys)
+    early, late = float(dry.snapshots.times[1]), float(dry.snapshots.times[-2])
+    frame = viewer_app.playback_frame(store, late, _controls(mode="compare", compare_set=keys))
+    views = {
+        "compare-histories-graph": lambda t: compare.histories_figure(items, t),
+        "compare-fields-graph": lambda t: compare.fields_figure(items, t),
+        "compare-difference-graph": lambda t: compare.difference_figure(items, 0, "h", t)[0],
+        "compare-profiles-graph": lambda t: compare.profiles_figure(items, None, t),
+        "compare-point-graph": lambda t: compare.point_series_figure(items, None, "h", t)[0],
+    }
+    assert sorted(frame) == sorted(views)
+    for graph, build in views.items():
+        before, after = _as_json(build(early)), _as_json(build(late))
+        played = _played(before, json.loads(json.dumps(frame[graph], cls=PlotlyJSONEncoder)))
+        assert _picture(played) == _picture(after), graph
+
+
+def test_a_tab_without_time_dependence_plays_no_frames(store):
+    key = _key(store, "Dry_N2")
+    assert viewer_app.playback_frame(store, 0.1, _controls(key=key, tab="overview")) == {}
+    assert viewer_app.playback_frame(
+        store, 0.1, _controls(key=key, tab="fields", fields_mode="final")) == {}
+
+
+def test_a_batch_holds_the_frames_asked_for(store, dry):
+    key = _key(store, "Dry_N2")
+    grid = [float(t) for t in dry.snapshots.times]
+    controls = _controls(key=key)
+    batch = viewer_app.frame_batch(store, grid, {"start": 2, "count": 3}, controls,
+                                   budget=60.0)
+    assert batch["start"] == 2 and len(batch["frames"]) == 3
+    assert batch["context"] == viewer_app.frame_context(grid, controls)
+    for offset, frame in enumerate(batch["frames"]):
+        assert frame == viewer_app.playback_frame(store, grid[2 + offset], controls)
+    # A spent budget still returns one frame, so the player always advances.
+    assert len(viewer_app.frame_batch(store, grid, {"start": 0, "count": 9}, controls,
+                                      budget=0.0)["frames"]) == 1
+    # Never past the end of the grid.
+    end = viewer_app.frame_batch(store, grid, {"start": len(grid) - 1, "count": 9},
+                                 controls, budget=60.0)
+    assert len(end["frames"]) == 1
+
+
+def test_every_control_invalidates_the_buffered_frames():
+    grid = [0.0, 0.5, 1.0]
+    base = _controls(key="a")
+    seen = {viewer_app.frame_context(grid, base)}
+    for name, value in [("mode", "compare"), ("key", "b"), ("tab", "profiles"),
+                        ("fields_mode", "final"), ("x", 0.3), ("kind", "classification"),
+                        ("theme", "dark"), ("compare_set", ["a", "b"]), ("reference", 1),
+                        ("field", "u_m"), ("point_field", "q")]:
+        seen.add(viewer_app.frame_context(grid, dict(base, **{name: value})))
+    seen.add(viewer_app.frame_context([0.0, 1.0], base))
+    assert len(seen) == 13
+    assert list(_controls()) == list(viewer_app.FRAME_CONTROL_NAMES)
+    assert len(viewer_app.FRAME_CONTROLS) == len(viewer_app.FRAME_CONTROL_NAMES)
+
+
+def _time_output(app):
+    return next(key for key in app.callback_map
+                if key.startswith("..time-index.value...current-t.data"))
+
+
+def test_the_server_ignores_the_slider_while_the_browser_plays(store, dry):
+    """While playing, the slider moves come from the browser player, which has
+    drawn the step already: the server publishes nothing. Once the player is
+    off (the last step, or a pause) the same move publishes the time."""
+    app = viewer_app.create_app(store=store)
+    output = _time_output(app)
+    grid = [float(t) for t in dry.snapshots.times]
+    inputs = {"time-index.value": 3, "time-grid.data": grid, "current-t.data": grid[2]}
+    playing = _post_raw(app, output, dict(inputs, **{"player.disabled": False}),
+                        ["time-index.value"])
+    assert playing.status_code == 204 or not playing.get_json()["response"]
+    stopped = _post(app, output, dict(inputs, **{"player.disabled": True}),
+                    ["time-index.value"])
+    assert stopped["current-t"]["data"] == grid[3]
+
+
+def test_the_frame_callback_answers_a_request(store, dry):
+    app = viewer_app.create_app(store=store)
+    grid = [float(t) for t in dry.snapshots.times]
+    inputs = {"frame-request.data": {"start": 1, "count": 2, "sequence": 1},
+              "time-grid.data": grid, "mode.value": "single",
+              "selected.data": _key(store, "Dry_N2"), "tabs.value": "fields",
+              "fields-mode.value": "t", "theme.data": "light"}
+    batch = _post(app, "frame-batch.data", inputs, ["frame-request.data"])["frame-batch"]["data"]
+    assert batch["start"] == 1 and 1 <= len(batch["frames"]) <= 2
+    assert list(batch["frames"][0]) == ["fields-graph"]
+
+
+# ---------------------------------------------------------------------------
+# GIF export (swme.report.animation, the GIF button)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["Dry_N2", "Lake_N1"])
+def test_the_gif_draws_each_stored_step_as_it_is(store, name):
+    """Every curve of frame k is the stored state k: h + Z over the bed when
+    there is one, then h, u_m and every moment."""
+    run = store.run(_key(store, name))
+    _, update = animation.build_animation(run)
+    values = run.snapshots.values
+    for k in (0, len(run.snapshots.times) // 2, len(run.snapshots.times) - 1):
+        drawn = [np.asarray(curve.get_ydata()) for curve in update(k)]
+        expected = ([values[k][:, 1] + run.bed_elevation] if run.has_topography else [])
+        expected += [values[k][:, column] for column in range(1, 3 + run.order)]
+        assert len(drawn) == len(expected) == 2 + run.order + run.has_topography
+        for curve, data in zip(drawn, expected):
+            np.testing.assert_array_equal(curve, data)
+    # Negative control: the frames are not all the same picture.
+    first = np.asarray(update(0)[0].get_ydata()).copy()
+    assert not np.array_equal(first, np.asarray(update(len(values) - 1)[0].get_ydata()))
+
+
+def test_the_gif_file(store, dry):
+    from PIL import Image
+    data = animation.gif_bytes(dry, frame_ms=200)
+    image = Image.open(io.BytesIO(data))
+    assert image.format == "GIF" and image.n_frames == len(dry.snapshots.times)
+    assert image.info["duration"] == 200 and image.info["loop"] == 0
+    first = np.asarray(image.convert("RGB"))
+    image.seek(image.n_frames - 1)
+    assert not np.array_equal(first, np.asarray(image.convert("RGB")))
+    # Browsers slow GIF delays under 20 ms down to 100 ms: never write one.
+    assert Image.open(io.BytesIO(animation.gif_bytes(dry, frame_ms=5))).info["duration"] == 20
+
+
+def test_a_run_without_history_has_no_gif(store, plain):
+    with pytest.raises(ValueError, match="store_history"):
+        animation.build_animation(plain)
+    assert viewer_app.gif_availability(store, "single", _key(store, "Plain_N0"))[0]
+    assert viewer_app.gif_availability(store, "compare", _key(store, "Dry_N2"))[0]
+    assert not viewer_app.gif_availability(store, "single", _key(store, "Dry_N2"))[0]
+
+
+def test_the_gif_button_downloads_the_selected_run(store, dry):
+    from PIL import Image
+    app = viewer_app.create_app(store=store)
+    inputs = {"gif-export.n_clicks": 1, "selected.data": _key(store, "Dry_N2"),
+              "mode.value": "single", "speed.value": "0.5×"}
+    sent = _post(app, "gif-download.data", inputs, ["gif-export.n_clicks"])["gif-download"]["data"]
+    assert sent["filename"].endswith(".gif") and sent["base64"]
+    image = Image.open(io.BytesIO(base64.b64decode(sent["content"])))
+    assert image.n_frames == len(dry.snapshots.times)
+    assert image.info["duration"] == viewer_app.play_interval("0.5×", "single")
 
 
 def _walk(component):

@@ -1,7 +1,8 @@
-"""`moment-sw-view` - browse run output in a local web app.
+"""`uv run visual` (alias `moment-sw-view`) - browse run output in a local web app.
 
-    uv run moment-sw-view                 # every run under results/
-    uv run moment-sw-view results/5p3     # one family, or one run directory
+    uv run visual results                 # every run under results/
+    uv run visual results/5p3             # one family, or one run directory
+    uv run moment-sw-view                 # the alias: no argument means results/
 
 Binds to 127.0.0.1 unless told otherwise: the viewer reads whatever is under
 the results root, and nothing about that should be on a network by default.
@@ -10,18 +11,20 @@ the results root, and nothing about that should be on a network by default.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import threading
 import webbrowser
 from pathlib import Path
 
+from ..commands import invoked_as
 from ..report.history import DEFAULT_CHUNK_ROWS
 from .store import DEFAULT_CAPACITY, DEFAULT_MAX_SNAPSHOTS
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="moment-sw-view",
+        prog=invoked_as("moment-sw-view"),
         description="Browse moment-sw run output interactively in the browser.")
     parser.add_argument(
         "directory", nargs="?", default="results",
@@ -43,7 +46,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-browser", action="store_true",
                         help="Do not open a browser tab on start.")
     parser.add_argument("--debug", action="store_true",
-                        help="Dash debug mode: error overlay and hot reload.")
+                        help="Dash debug mode: error overlay and hot reload. Also keeps "
+                             "the server's log of every request, which is otherwise off.")
     return parser
 
 
@@ -70,6 +74,12 @@ def main(argv=None) -> int:
     print(f"Serving on {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    if not args.debug:
+        # Werkzeug logs every request at INFO, several a second while playing,
+        # and its development-server notice: this server only ever binds to
+        # this machine by default. Errors still show.
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
+        app.logger.setLevel(logging.WARNING)
     app.run(host=args.host, port=args.port, debug=args.debug)
     return 0
 

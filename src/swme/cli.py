@@ -46,6 +46,7 @@ from . import spatialDiscretization
 from . import timeIntegration
 from . import topography as topography_module
 from .wetdry import WetDryThresholds
+from .commands import invoked_as
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _CONFIG_DIR = _PACKAGE_DIR / 'config'
@@ -700,7 +701,7 @@ def write_outputs(sim, data_array, output_dir: str, prefix: str, order: int,
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog='moment-sw',
+        prog=invoked_as('moment-sw'),
         description='1D finite-volume solver for the Shallow Water Moment '
                     'Equations (SWME/HSWME) and their rainfall-runoff '
                     '(recharge) extension.',
@@ -728,7 +729,7 @@ def main(argv=None):
         '--report', action='store_true',
         help='Write a multi-page PDF report to <output-dir>/report.pdf. Off by '
              'default so a scripted run stays free of matplotlib; build one '
-             'later from the CSVs with `moment-sw-report <dir>`.')
+             'later from the CSVs with `uv run report <dir>`.')
     args = parser.parse_args(argv)
 
     if args.list_configs:

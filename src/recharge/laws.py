@@ -222,10 +222,13 @@ class ConstantInfiltration(object):
     eps : float, optional
         Small positive number to avoid division by zero.
     limit_by_rainfall : bool, optional
-        If True, cap infiltration by the rainfall rate.
+        If True, cap infiltration by the rainfall rate, and the availability
+        bound below becomes h / dt (rainfall-limited variant).
     limit_by_available_water : bool, optional
-        If True, cap infiltration by h / dt so that more water is not removed
-        than is available in the cell over one timestep.
+        If True, cap infiltration by the water available over one source
+        step, R + h / dt (thesis eq. 4.12): the water standing in the cell
+        plus the rain supplied during the step. One explicit step then cannot
+        produce a negative depth.
 
     Notes
     -----
@@ -281,11 +284,11 @@ class ConstantInfiltration(object):
         For I0 > 0, optional rainfall / available-water caps are applied
         For I0 < 0, the value is returned unchanged
 
-        Default testing behaviour:
-            I(t) = I0
+        For I0 > 0 (thesis eq. 4.12), with the default caps:
+            I(t) = min( I0, R + h / dt )
 
-        Optional caps can be enabled:
-            I(t) = min( I0, rainfall, h / dt )
+        With limit_by_rainfall=True (rainfall-limited variant):
+            I(t) = min( I0, R, h / dt )
 
         Parameters
         ----------
@@ -308,18 +311,26 @@ class ConstantInfiltration(object):
 
         # Infiltration branch
         if np.all(I >= 0.0):
+            # `infiltrated_depth` may be called without a rainfall rate
+            R = np.asarray(0.0 if rainfall is None else rainfall,
+                           dtype=np.float64)
+
             # Apply the rainfall limit if enabled
-                if self.limit_by_rainfall:
-                    R = np.asarray(rainfall, dtype=np.float64)
-                    I = np.minimum(I, R)
+            if self.limit_by_rainfall:
+                I = np.minimum(I, R)
 
-                # Apply dry cell treatment via tolerance eps to avoid division by zero
-                if self.limit_by_available_water and h is not None and dt is not None:
-                    h = np.asarray(h, dtype=np.float64)
-                    available_rate = np.maximum(h, 0.0) / max(float(dt), self.eps)
-                    I = np.minimum(I, available_rate)
+            # Availability bound over one source step. The supply is the
+            # standing water plus, unless the rate is already capped by
+            # rainfall, the rain of the step: R + h / dt (thesis eq. 4.12).
+            # eps guards the division for dt = 0.
+            if self.limit_by_available_water and h is not None and dt is not None:
+                h = np.asarray(h, dtype=np.float64)
+                available_rate = np.maximum(h, 0.0) / max(float(dt), self.eps)
+                if not self.limit_by_rainfall:
+                    available_rate = available_rate + np.maximum(R, 0.0)
+                I = np.minimum(I, available_rate)
 
-                I = np.maximum(I, 0.0)
+            I = np.maximum(I, 0.0)
         
         # Total output and exfiltration branch
         return np.float64(I) if I.ndim == 0 else I

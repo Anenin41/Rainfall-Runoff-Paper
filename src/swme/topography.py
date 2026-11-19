@@ -10,8 +10,9 @@ Where the pieces live (RESTRUCTURE_PLAN.md Step 5):
 * the *coupling* into the scheme is the augmented (U, Z) path-conservative
   system matrix, `pde.SWME1D.compute_augmented_system_matrix`;
 * `TopographySettings` is the small bundle the PDE needs in order to build
-  topography-aware initial conditions (`lakeAtRest`, `perturbedLakeAtRest`),
-  which cannot be written as a function of position alone.
+  topography-aware initial conditions (`lakeAtRest`, `perturbedLakeAtRest`,
+  `lakeWithDryShores`), which cannot be written as a function of position
+  alone.
 
 A flat bed is the default everywhere, so nothing in this module changes the
 behavior of a config that does not mention topography.
@@ -140,7 +141,54 @@ def tanh_step(amplitude: float = 0.1, position: float = 0.5,
     return z_of_x
 
 
+def basin_dam(bank_height: float = 0.6, bank_position: float = 1.0,
+              bank_width: float = 0.6, dam_height: float = 0.5,
+              dam_position: float = 6.0, dam_width: float = 0.4,
+              downstream_slope: float = 0.05) -> BedElevation:
+    """A basin between a ridge on the left and a dam on the right.
+
+        Z(x) = bank_height * exp(-((x - bank_position)/bank_width)^2)
+               + dam_height * exp(-((x - dam_position)/dam_width)^2)
+               - downstream_slope * max(x - dam_position, 0)
+
+    Three pieces:
+
+    * the bank: a Gaussian ridge. Its crest is a divide: water on its inner
+      side runs into the basin, water on its outer side runs away from it,
+      so an open (zero-gradient) boundary placed beyond the crest lets water
+      out and feeds none in;
+    * the dam: a Gaussian hump whose crest, at `dam_position`, stands
+      `dam_height` above the basin floor;
+    * the valley below the dam: the bed falls away linearly from the crest
+      line, so water that overtops the dam keeps running to the outflow.
+
+    Between the two humps the floor is at Z = 0 up to their tails. A lake
+    fills the basin up to the lower of the two crests and then spills.
+    """
+    if bank_width <= 0.0:
+        raise ValueError(f"basin_dam bank_width must be > 0, got {bank_width}.")
+    if dam_width <= 0.0:
+        raise ValueError(f"basin_dam dam_width must be > 0, got {dam_width}.")
+    if dam_position <= bank_position:
+        raise ValueError(
+            f"basin_dam needs dam_position ({dam_position}) to the right of "
+            f"bank_position ({bank_position})."
+        )
+
+    def z_of_x(x):
+        xi = np.asarray(x, dtype=np.float64)
+        xi_bank = (xi - bank_position) / bank_width
+        bank = bank_height * np.exp(-xi_bank * xi_bank)
+        eta = (xi - dam_position) / dam_width
+        dam = dam_height * np.exp(-eta * eta)
+        valley = downstream_slope * np.maximum(xi - dam_position, 0.0)
+        return bank + dam - valley
+
+    return z_of_x
+
+
 _PROFILE_BUILDERS: dict[str, Callable[..., BedElevation]] = {
+    "basin_dam": basin_dam,
     "flat": flat,
     "linear_slope": linear_slope,
     "gaussian_bump": gaussian_bump,
@@ -205,6 +253,11 @@ class TopographySettings:
         Gaussian free-surface perturbation added by the
         `perturbedLakeAtRest` initial condition. An amplitude of 0 makes it
         identical to `lakeAtRest`.
+    lake_left, lake_right : float
+        Extent of the water body of the `lakeWithDryShores` initial
+        condition: h(x) = max(H - Z(x), 0) for lake_left <= x <= lake_right
+        and 0 outside. Unbounded by default. Needed when ground beyond a
+        divide lies below the lake level, as the valley below a dam does.
     """
 
     bed_elevation: BedElevation | None = None
@@ -212,6 +265,15 @@ class TopographySettings:
     perturbation_amplitude: float = 0.0
     perturbation_center: float = 0.0
     perturbation_width: float = 1.0
+    lake_left: float = -np.inf
+    lake_right: float = np.inf
+
+    def __post_init__(self):
+        if not self.lake_left < self.lake_right:
+            raise ValueError(
+                f"lake_left ({self.lake_left}) must be < lake_right "
+                f"({self.lake_right})."
+            )
 
     def elevation_at(self, position) -> float:
         """Z(position) as a plain float; 0 for the default flat bed."""

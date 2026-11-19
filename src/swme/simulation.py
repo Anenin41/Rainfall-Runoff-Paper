@@ -6,6 +6,7 @@ from . import pde
 from . import mesh
 from . import spatialDiscretization
 from . import timeIntegration
+from . import wetdry
 
 # How many times the positivity limiter may re-derive the timestep for schemes
 # whose viscosity depends on it (LF, PRICE). Shrinking delta_t raises their
@@ -204,6 +205,13 @@ class ClassicalSimulation1D(Simulation):
         self.history_stride = 10                        # stride for storing
         self.history = []                               # array to store in
 
+        # Optional mass budget. If enabled, every stored step records the
+        # total mass together with the cumulative mass added by the source
+        # terms, entering through the left boundary, leaving through the
+        # right boundary and created by clamping; see `_store_mass_budget`.
+        self.store_mass_budget = False
+        self.mass_budget = []
+
         # Per-timestep progress output. Off by default: printing four lines
         # per step produced a 1.9 MB log for a single thesis case, which is
         # useless in a batch sweep and drowns the diagnostics that matter.
@@ -256,6 +264,67 @@ class ClassicalSimulation1D(Simulation):
             "step" : step,
             "time" : time,
             "data" : snapshot,
+        })
+
+    def _store_mass_budget(self,
+                           values : np.ndarray,
+                           step : int,
+                           time : float,
+                           delta_x : float,
+                           totals : dict) -> None:
+        """
+        Optionally record one row of the mass budget.
+
+        The finite-volume update conserves mass up to what the sources add
+        and what crosses the two ends of the domain. With the mass flux of an
+        interface written in terms of its fluctuations,
+        F = q_left + D-[0] = q_right - D+[0], one step changes the total mass
+        M = dx * sum_i h_i by
+
+            dM = dt * (F_left_end - F_right_end)  +  dx * sum_i (source step)
+                 + (mass created by clamping).
+
+        The cumulative terms are accumulated in `run_simulation` and stored
+        here together with M and the residual
+
+            residual = M - M(0) - (source + inflow_left - outflow_right
+                                   + clamping),
+
+        which should stay at round-off. For periodic boundaries the two
+        boundary terms are equal and cancel.
+
+        Parameters
+        ----------
+        values : numpy.ndarray
+            Current state array, including ghost cells.
+        step : int
+            Current time-step index.
+        time : float
+            Physical time associated with the stored state.
+        delta_x : float
+            Cell width.
+        totals : dict
+            Running totals 'source', 'inflow_left', 'outflow_right' and the
+            initial mass 'initial_mass'.
+        """
+        if not self.store_mass_budget:
+            return
+
+        if step % self.history_stride != 0:
+            return
+
+        mass = float(np.sum(values[1:self.mesh.resolution+1, 0]) * delta_x)
+        accounted = (totals['source'] + totals['inflow_left']
+                     - totals['outflow_right'] + self.mass_created_by_clamping)
+        self.mass_budget.append({
+            "step": step,
+            "time": time,
+            "mass": mass,
+            "cumulative_source": totals['source'],
+            "cumulative_inflow_left": totals['inflow_left'],
+            "cumulative_outflow_right": totals['outflow_right'],
+            "cumulative_clamping": self.mass_created_by_clamping,
+            "residual": mass - totals['initial_mass'] - accounted,
         })
 
     def _store_hyperbolicity_snapshot(self,
@@ -484,6 +553,14 @@ class ClassicalSimulation1D(Simulation):
         self._store_snapshot(values, step=0, time=t)
         self._store_hyperbolicity_snapshot(values, step=0, time=t)
 
+        self.mass_budget = []
+        budget = {
+            'source': 0.0, 'inflow_left': 0.0, 'outflow_right': 0.0,
+            'initial_mass': float(
+                np.sum(values[1:self.mesh.resolution+1, 0]) * delta_x),
+        }
+        self._store_mass_budget(values, 0, t, delta_x, budget)
+
         def system_matrix(cell_values):
             return self.pde_type.compute_system_matrix(self.order,cell_values)
 
@@ -503,6 +580,7 @@ class ClassicalSimulation1D(Simulation):
         # a flat-bed run never enters the augmented path and reproduces
         # pre-topography results bit for bit.
         use_topography = bool(getattr(self.mesh, "has_topography", False))
+        treat_shorelines = False
         if use_topography:
             bed_elevation = np.asarray(self.mesh.bed_elevation, dtype=np.float64)
             if bed_elevation.shape != (self.mesh.resolution + 2,):
@@ -547,6 +625,20 @@ class ClassicalSimulation1D(Simulation):
                 return self.pde_type.compute_augmented_system_matrix(
                     self.order, augmented_values)
 
+            # Shoreline treatment (wetdry.shoreline_fluctuation): at a wet-dry
+            # interface across a bed step, the augmented fluctuation is
+            # replaced by the nonlinear Riemann problems of Castro et al.
+            # (2006), Section 5: a wall or a climb for the water of the lower
+            # cell, an overfall for the water of the higher one. Castro's
+            # Case 3.3 keeps the ordinary fluctuation, which falls back to the
+            # wall if it would drain a dry cell. Without the treatment the
+            # Roe/Osher viscosity draws water out of the dry cell above the
+            # waterline. It never fires where both cells are wet or the bed
+            # is locally flat.
+            treat_shorelines = bool(
+                getattr(thresholds, 'shoreline_treatment', False))
+            hyperbolic = bool(getattr(self.pde_type, 'hyperbolic', False))
+
         while t < t_end:
 
             # update boundary conditions
@@ -562,6 +654,17 @@ class ClassicalSimulation1D(Simulation):
                 if use_topography:
                     n_var = self.number_of_variables
                     for i in range(self.mesh.resolution+1):
+                        if treat_shorelines:
+                            treated = wetdry.shoreline_fluctuation(
+                                self.spatial_discretization, system_matrix,
+                                values[i,:], values[i+1,:],
+                                bed_elevation[i], bed_elevation[i+1],
+                                step_size, delta_x, thresholds,
+                                hyperbolic=hyperbolic)
+                            if treated is not None:
+                                fluctuations_min[i,:], fluctuations_plus[i,:] = treated
+                                continue
+
                         augmented_left[:n_var] = values[i,:]
                         augmented_left[n_var] = bed_elevation[i]
                         augmented_right[:n_var] = values[i+1,:]
@@ -578,6 +681,25 @@ class ClassicalSimulation1D(Simulation):
                         # state array has no Z column to write it into.
                         fluctuations_min[i,:] = fluctuation_min[:n_var]
                         fluctuations_plus[i,:] = fluctuation_plus[:n_var]
+
+                        # Second shoreline trigger: the ordinary fluctuation
+                        # across a bed step would drain a dry cell (Castro's
+                        # Case 3.3, for example water receding from a barely
+                        # submerged dry cell). The lower cell then gets the
+                        # wall.
+                        bed_step = bed_elevation[i+1] - bed_elevation[i]
+                        if (treat_shorelines and bed_step != 0.0
+                                and wetdry.drains_a_dry_cell(
+                                    values[i,0], values[i+1,0],
+                                    values[i,1] + fluctuation_min[0],
+                                    step_size, delta_x, thresholds)):
+                            fluctuations_min[i,:], fluctuations_plus[i,:] = \
+                                wetdry.shoreline_fluctuation(
+                                    self.spatial_discretization, system_matrix,
+                                    values[i,:], values[i+1,:],
+                                    bed_elevation[i], bed_elevation[i+1],
+                                    step_size, delta_x, thresholds,
+                                    hyperbolic=hyperbolic, force_wall=True)
                 else:
                     for i in range(self.mesh.resolution+1):
                         fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
@@ -648,8 +770,22 @@ class ClassicalSimulation1D(Simulation):
                             "scale of this problem."
                         )
 
+            # Mass fluxes through the two ends of the domain, from the
+            # fluctuations of the first and last interface (see
+            # `_store_mass_budget`).
+            budget['inflow_left'] += delta_t * (
+                values[1, 1] - fluctuations_plus[0, 0])
+            budget['outflow_right'] += delta_t * (
+                values[self.mesh.resolution, 1]
+                + fluctuations_min[self.mesh.resolution, 0])
+
+            # Kept for the negative-height diagnostic and the mass budget.
+            height_before_update = values[1:self.mesh.resolution+1, 0].copy()
+            height_after_flux = np.empty(self.mesh.resolution)
+
             for i in range(1,self.mesh.resolution+1):
                 values[i,:] = values[i,:] - delta_t/delta_x*(fluctuations_plus[i-1,:]+fluctuations_min[i,:])
+                height_after_flux[i-1] = values[i, 0]
 
                 # Generic source-context hook.
                 # The recharge PDE, as well as some other PDE models may require
@@ -678,10 +814,11 @@ class ClassicalSimulation1D(Simulation):
                         f"values={values[i, :]}"
                     )
                 # h == 0 is a legitimate dry cell since Step 6, so this is no
-                # longer a crash-on-sight. It is kept as the assertion that
-                # the positivity limiter above did its job: a *negative* height
-                # is still impossible, and reaching one means the limiter has a
-                # bug rather than the problem being hard.
+                # longer a crash-on-sight. A depth below the round-off
+                # tolerance is still an error. The positivity limiter only
+                # bounds the flux update of cells above h_dry; a cell at or
+                # below h_dry is not protected by it, and neither is the
+                # source step, so the message names all three origins.
                 if values[i, 0] < -_NEGATIVE_HEIGHT_TOLERANCE:
                     hint = ""
                     if getattr(self.pde_type, 'viscosity', 0.0) and not \
@@ -702,9 +839,18 @@ class ClassicalSimulation1D(Simulation):
                         f"Negative height produced after update  "
                         f"at step={step}, time={t}, cell={i-1}, x={self.mesh.cell_center_positions[i-1]},  "
                         f"h={values[i, 0]}, values={values[i, :]}. The "
-                        f"positivity-preserving timestep limiter guarantees "
-                        f"this cannot come from the flux update.{hint}"
+                        f"depth before the flux update was "
+                        f"{height_before_update[i-1]} and after it "
+                        f"{height_after_flux[i-1]}. The positivity-preserving "
+                        f"timestep limiter only protects cells above h_dry = "
+                        f"{dry_threshold}, so a negative depth can come from "
+                        f"(a) the flux update of a cell at or below h_dry, "
+                        f"which over non-flat topography happens at a wet-dry "
+                        f"interface the shoreline treatment does not cover "
+                        f"(see docs/limitations.md), or (b) the source "
+                        f"step.{hint}"
                     )
+                budget['source'] += (values[i, 0] - height_after_flux[i-1]) * delta_x
                 if values[i, 0] < 0.0:
                     # Round-off below the tolerance: clamp so the state stays
                     # physically meaningful rather than carrying a tiny
@@ -712,6 +858,15 @@ class ClassicalSimulation1D(Simulation):
                     # created here, so keep a running total of how much.
                     self.mass_created_by_clamping -= values[i, 0] * delta_x
                     values[i, 0] = 0.0
+                # With the shoreline treatment, a dry cell does not keep
+                # momentum or moments its water cannot carry: its state is
+                # reset to the desingularised one, h unchanged (see
+                # wetdry.regularised_state). Left alone, such a residue is
+                # read as a discharge by the next ordinary interface, which
+                # then drains the cell.
+                if treat_shorelines and values[i, 0] <= dry_threshold:
+                    values[i, :] = wetdry.regularised_state(
+                        values[i, :], thresholds)
             if self.verbose:
                 print(f'  step {step}  t = {t:.6g}  dt = {delta_t:.6g}')
 
@@ -722,6 +877,7 @@ class ClassicalSimulation1D(Simulation):
             # Store history snapshot if enabled
             self._store_snapshot(values, step = step, time = t)
             self._store_hyperbolicity_snapshot(values, step = step, time = t)
+            self._store_mass_budget(values, step, t, delta_x, budget)
 
         # Hyperbolicity report. The scheme has already eigendecomposed the
         # transport matrix at every interface to build its viscosity, so this

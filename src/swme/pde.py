@@ -435,7 +435,8 @@ class SWME1D(PDE):
             false if the source term is represented in vector form
         topography : TopographySettings, optional
             bed-elevation settings, needed only by the topography-aware
-            initial conditions ('lakeAtRest', 'perturbedLakeAtRest'), which
+            initial conditions ('lakeAtRest', 'perturbedLakeAtRest',
+            'lakeWithDryShores'), which
             cannot be expressed as a function of position alone. Defaults to a
             flat bed at zero, i.e. exactly the pre-topography behavior. The
             bed's effect on the *dynamics* does not come through here - it
@@ -979,13 +980,33 @@ class SWME1D(PDE):
                     f"Initial condition '{initial_condition}' produced a "
                     f"non-positive water height h={height} at x={position} "
                     f"(bed Z={bed}, reference level "
-                    f"{settings.reference_water_level}). Raise the reference "
-                    "level above the highest point of the bed - dry cells are "
-                    "not supported yet (RESTRUCTURE_PLAN.md Step 6)."
+                    f"{settings.reference_water_level}). '{initial_condition}' "
+                    "is the fully wet benchmark: raise the reference level "
+                    "above the highest point of the bed, or use "
+                    "'lakeWithDryShores' for a lake whose shores are dry."
                 )
 
             # At rest: zero momentum and zero moments, at every order.
             initial_values[0] = height
+        elif initial_condition == 'lakeWithDryShores':
+            # A lake at rest that does not cover the whole bed:
+            #     h(x) = max(H - Z(x), 0)   for lake_left <= x <= lake_right,
+            #     h(x) = 0                  elsewhere,
+            # with zero momentum and zero moments. Ground above the level H is
+            # exactly dry. The extent matters when ground beyond a divide lies
+            # below H (the valley below a dam): without it that ground would
+            # be flooded too. Over a non-flat bed this state is only held at
+            # rest with the shoreline treatment (wetdry.shoreline_fluctuation).
+            settings = self.topography
+            if settings.lake_left <= position <= settings.lake_right:
+                height = (settings.reference_water_level
+                          - settings.elevation_at(position))
+                if not np.isfinite(height):
+                    raise ValueError(
+                        f"Initial condition '{initial_condition}' produced a "
+                        f"non-finite water height at x={position}."
+                    )
+                initial_values[0] = max(height, 0.0)
         elif initial_condition == 'smooth_wave_smallHeightGradient':
             initial_values[0] = 1 + 0.5*np.exp(-3*position**2)
             initial_values[1] = 1.0*initial_values[0]
@@ -1022,7 +1043,7 @@ class SWME1D(PDE):
             # delta_t, so any difference here would perturb every subsequent
             # step. Keeping this branch verbatim is what lets runs that never
             # approach drying reproduce earlier results exactly.
-            wave_speed_sqrt = values[:,0]*int(g)
+            wave_speed_sqrt = values[:,0]*g
             for i in range(order):
                 wave_speed_sqrt += np.divide(values[:,i+2]*values[:,i+2],values[:,0]*values[:,0])
             max_wave_speed_plus = np.max(np.abs(np.divide(values[:,1],values[:,0])+np.sqrt(wave_speed_sqrt)))
@@ -1034,7 +1055,7 @@ class SWME1D(PDE):
         # than inf/NaN and cannot collapse the timestep.
         h, um, alpha = desingularized_primitives_array(order, values, self.wet_dry)
 
-        wave_speed_sqrt = h*int(g)
+        wave_speed_sqrt = h*g
         for i in range(order):
             wave_speed_sqrt = wave_speed_sqrt + alpha[:,i]*alpha[:,i]
         wave_speed_sqrt = np.maximum(wave_speed_sqrt, 0.0)
@@ -1055,7 +1076,7 @@ class SWME1D(PDE):
         # film, or set t_end/resolution so the fallback step is small enough
         # for the source. CFL-based stepping cannot solve this on its own.
         if not np.isfinite(max_wavespeed) or max_wavespeed <= 0.0:
-            return float(np.sqrt(self.wet_dry.h_wet * int(g)))
+            return float(np.sqrt(self.wet_dry.h_wet * g))
         return max_wavespeed
 
     def compute_vertical_velocity_profile(self,

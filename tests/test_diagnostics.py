@@ -226,7 +226,8 @@ def test_sidecar_records_what_the_csvs_cannot(dry_run):
     assert metadata["hyperbolic"] is False
     assert metadata["resolution"] == 40
     assert metadata["time_integrator"] == "ExplicitEuler"
-    assert metadata["wet_dry"] == {"eps_div": 1e-14, "h_dry": 1e-4, "h_wet": 1e-3}
+    assert metadata["wet_dry"] == {"eps_div": 1e-14, "h_dry": 1e-4, "h_wet": 1e-3,
+                                   "shoreline_treatment": True}
     assert metadata["store_hyperbolicity"] is True
     assert set(metadata["scheme_counters"]) == {
         "spectra_examined", "nonhyperbolic_count",

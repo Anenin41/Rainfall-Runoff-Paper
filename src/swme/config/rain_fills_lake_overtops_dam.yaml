@@ -1,0 +1,151 @@
+# ===========================================================================
+# RAIN FILLS A LAKE UNTIL IT OVERTOPS A DAM
+# Rainfall-runoff into a basin with dry banks, Horton infiltration, and a
+# spill over the dam into a dry valley.
+#
+#   uv run moment-sw --config rain_fills_lake_overtops_dam --report
+#
+# Runtime: about 3 minutes on one core (200 cells, 941 steps).
+# ---------------------------------------------------------------------------
+# WHAT THIS RUN EXERCISES
+#
+#   shoreline treatment  a lake with dry banks, rain wetting those banks, the
+#                        waterline climbing them, and a spill running down
+#                        the dry face of the dam: wet-dry interfaces over a
+#                        non-flat bed throughout, handled by the modified Roe
+#                        scheme of Castro et al. (2006), Section 5
+#                        (wetdry.shoreline_fluctuation)
+#   RechargeSWME1D       uniform rain R, Horton infiltration with the ponded
+#                        closure I = min(f_p(t), R + h/dt), which is the
+#                        default, and rainfall mixing friction
+#   HSWME closure        hyperbolic: true at N = 1
+#   topography           the basin_dam bed: a ridge (crest at x = 1, Z = 0.9),
+#                        a level floor, a Gaussian dam whose crest cell is at
+#                        x = 5.980, Z = 0.4987, and a valley falling away
+#                        below it
+#   lakeWithDryShores    a lake at rest at level 0.4 between the ridge and
+#                        the dam, exactly dry everywhere else
+#   mass budget          store_mass_budget: true writes
+#                        recharge_hswme_N1_horton_mass_budget.csv
+#
+# The flow is inviscid (viscosity 0), so the source step is explicit. With
+# friction near the dry banks use ImplicitEuler with linear_source: false.
+# h_dry is 1e-3 on purpose: a rain film thinner than that is handled by the
+# shoreline treatment. With a much smaller h_dry such films count as wet,
+# drain down the banks through the ordinary scheme, and the positivity
+# limiter cuts the timestep by orders of magnitude (measured on a first
+# version of this case: down to 1e-5 with h_dry = 1e-5).
+# ---------------------------------------------------------------------------
+# WHAT TO LOOK FOR  (all numbers measured on this config; units with g = 1)
+#
+# 1. The lake first FALLS. Under the ponded closure the lake bed infiltrates
+#    at the full Horton capacity f_p(t) = 0.004 + 0.026 exp(-t/2), which
+#    exceeds the rain R = 0.012 until
+#        t_p = ln((f0 - fc)/(R - fc))/k = 2.357.
+#    The banks stay dry until then: they infiltrate everything that falls on
+#    them. Lake level at x = 4: 0.4000 at t = 0, minimum 0.3825 at t = 2.37.
+#    (Closed form for the minimum, 0.4 - int_0^t_p (f_p - R) dt: 0.3826.)
+#
+# 2. Then it RISES, fed by the rain on the lake and the runoff from the ridge
+#    and from the upstream face of the dam:
+#        t        5.0     7.5     10.0    12.5    15.0    17.5    20.0    25.0
+#        level    0.3918  0.4107  0.4359  0.4567  0.4821  0.5030  0.5232  0.5633
+#
+# 3. OVERTOPPING. The lake level passes the crest elevation 0.4987 at
+#    t = 16.99. Water then runs over the crest and down the dry face of the
+#    dam. Discharge over the crest (h u_m in the crest cell): 0.0012 at
+#    t = 20, 0.0032 at t = 22.5, 0.0069 at t = 25, still growing towards the
+#    net inflow into the basin, (R - fc) times the 4.98 between the two
+#    crests = 0.040. The head over the crest at t = 25 is 0.065.
+#
+# 4. SPILLED VOLUME. Volume passed over the crest by t = 25 (time integral of
+#    the crest discharge): 0.0186. The valley below the dam holds 0.4906 at
+#    t = 25; most of that is rain that fell there, not spill.
+#
+# 5. MASS BUDGET at t = 25.009, closed to round-off:
+#        initial mass                 1.514437
+#      + rain  (R * t * L)            3.001048
+#      - infiltration                 1.424741
+#      - outflow, left boundary       0.152651
+#      - outflow, right boundary      0.193409
+#      = final mass                   2.744685
+#    Largest residual of this balance over the run: 4.6e-13. No negative
+#    depth, no mass created by clamping. The left-boundary outflow is the
+#    runoff from the outer slope of the ridge.
+#
+# 6. RAIN AND INFILTRATION DECIDE THE OUTCOME. Same rain, same bed, three
+#    soils, all to t = 25:
+#
+#      infiltration                  lake level   reaches   spilled   infiltrated
+#                                    min / end    crest at  volume    volume
+#      none (constant, rate 0)       0.400/0.671  t =  7.23  0.2729   0
+#      Horton f0 0.03, fc 0.004      0.383/0.563  t = 16.99  0.0186   1.4247
+#        (this config)
+#      Horton f0 0.06, fc 0.008      0.324/0.407  never     -0.0008   2.6067
+#
+#    Without infiltration the lake only rises and overtops 9.8 time units
+#    earlier, spilling fifteen times as much. With the stronger soil the
+#    capacity stays above the rain until t_p = 5.13, the lake falls to 0.3235
+#    and has only just recovered its initial level at t = 25: nothing spills
+#    (the small negative volume is the rain film on the crest draining back
+#    into the lake).
+#    To reproduce: set infiltration_type: constant with
+#    constant_infiltration_rate: 0.0 (and drop the horton_* keys), or set
+#    horton_f0: 0.06 and horton_fc: 0.008.
+#
+# The scheme is first order and carries the path-quadrature defect described
+# in docs/limitations.md; the numbers above are what this code computes, not
+# converged values.
+# ===========================================================================
+
+pde:
+  type: RechargeSWME1D
+  initial_condition: lakeWithDryShores
+  viscosity: 0.0
+  slip_length: 1.0
+  linear_source: false
+  hyperbolic: true
+  rainfall_rate: 0.012
+  mixing_friction_model: admissible
+  alpha_R: 1.0
+  alpha_I: 1.0
+  infiltration_type: horton
+  horton_f0: 0.03
+  horton_fc: 0.004
+  horton_k: 0.5
+
+grid:
+  x1: 0.0
+  x2: 10.0
+  resolution_x: 200
+
+numerics:
+  order: 1
+  t_end: 25.0
+  method: classical
+  fvm_type: PVM
+  pvm: Roe
+  time_integrator: ExplicitEuler
+  boundary_condition: INFLOW_OUTFLOW
+
+topography:
+  bed_profile: basin_dam
+  bank_height: 0.9
+  bank_position: 1.0
+  bank_width: 0.6
+  dam_height: 0.5
+  dam_position: 6.0
+  dam_width: 0.4
+  downstream_slope: 0.05
+  reference_water_level: 0.4
+  lake_left: 1.0
+  lake_right: 6.0
+
+wet_dry:
+  h_dry: 1.0e-3
+  h_wet: 1.0e-2
+
+postprocessing:
+  store_history: true
+  store_mass_budget: true
+  history_stride: 1

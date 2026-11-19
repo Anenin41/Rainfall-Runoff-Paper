@@ -82,10 +82,10 @@ _SECTION_KEYS = {
         'order', 't_end', 'method', 'fvm_type', 'pvm', 'time_integrator',
         'boundary_condition',
     },
-    'wet_dry': {'eps_div', 'h_dry', 'h_wet'},
+    'wet_dry': {'eps_div', 'h_dry', 'h_wet', 'shoreline_treatment'},
     'postprocessing': {
         'output_dir', 'store_history', 'store_hyperbolicity',
-        'history_stride', 'hyperbolicity_stride',
+        'store_mass_budget', 'history_stride', 'hyperbolicity_stride',
     },
     # `topography` is validated separately: everything except the reserved keys
     # below is a parameter of the chosen bed profile, so the key set is open.
@@ -96,6 +96,7 @@ _REQUIRED_SECTIONS = ('pde', 'grid', 'numerics')
 _TOPOGRAPHY_RESERVED = frozenset({
     'bed_profile', 'reference_water_level',
     'perturbation_amplitude', 'perturbation_center', 'perturbation_width',
+    'lake_left', 'lake_right',
 })
 
 
@@ -281,6 +282,8 @@ def build_topography(config: dict) -> topography_module.TopographySettings:
         perturbation_amplitude=_number(section, 'topography', 'perturbation_amplitude', 0.0),
         perturbation_center=_number(section, 'topography', 'perturbation_center', 0.0),
         perturbation_width=_number(section, 'topography', 'perturbation_width', 1.0),
+        lake_left=_number(section, 'topography', 'lake_left', float('-inf')),
+        lake_right=_number(section, 'topography', 'lake_right', float('inf')),
     )
 
 
@@ -288,7 +291,9 @@ def build_wet_dry(config: dict) -> WetDryThresholds:
     """Wet-dry thresholds from the optional `wet_dry:` section.
 
     The defaults never activate above h ~ 1e-3, so a config that omits this
-    behaves exactly as it did before Step 6.
+    behaves exactly as it did before Step 6. `shoreline_treatment` (default
+    true) only acts at wet-dry interfaces across a bed step; see
+    `wetdry.shoreline_fluctuation`.
     """
     section = _section(config, 'wet_dry')
     defaults = WetDryThresholds()
@@ -296,6 +301,9 @@ def build_wet_dry(config: dict) -> WetDryThresholds:
         eps_div=_number(section, 'wet_dry', 'eps_div', defaults.eps_div),
         h_dry=_number(section, 'wet_dry', 'h_dry', defaults.h_dry),
         h_wet=_number(section, 'wet_dry', 'h_wet', defaults.h_wet),
+        shoreline_treatment=_boolean(
+            section, 'wet_dry', 'shoreline_treatment',
+            defaults.shoreline_treatment),
     )
 
 
@@ -452,6 +460,8 @@ def build_simulation(config: dict, *, verbose: bool = False):
         postprocessing, 'postprocessing', 'store_history', True)
     _simulation.store_hyperbolicity = _boolean(
         postprocessing, 'postprocessing', 'store_hyperbolicity', False)
+    _simulation.store_mass_budget = _boolean(
+        postprocessing, 'postprocessing', 'store_mass_budget', False)
     _simulation.history_stride = _integer(
         postprocessing, 'postprocessing', 'history_stride', 1)
     _simulation.hyperbolicity_stride = _integer(
@@ -560,6 +570,7 @@ def build_run_metadata(sim, config: dict, *, config_name=None, config_path=None,
         'store_history': bool(sim.store_history),
         'history_stride': int(sim.history_stride),
         'store_hyperbolicity': bool(sim.store_hyperbolicity),
+        'store_mass_budget': bool(getattr(sim, 'store_mass_budget', False)),
         'hyperbolicity_stride': int(sim.hyperbolicity_stride),
         'hyperbolicity_tol': float(sim.hyperbolicity_tol),
         # End-of-run scheme counters. Recorded even when zero, because a zero
@@ -584,9 +595,17 @@ def build_run_metadata(sim, config: dict, *, config_name=None, config_path=None,
         'reference_water_level': (
             _number(topography_section, 'topography', 'reference_water_level', 1.0)
             if topography_section else None),
+        # Extent of the 'lakeWithDryShores' water body; null where unbounded
+        # (JSON has no infinity).
+        'lake_left': (_number(topography_section, 'topography', 'lake_left')
+                      if 'lake_left' in topography_section else None),
+        'lake_right': (_number(topography_section, 'topography', 'lake_right')
+                       if 'lake_right' in topography_section else None),
         'has_topography': bool(_mesh.has_topography),
         'wet_dry': ({'eps_div': wet_dry.eps_div, 'h_dry': wet_dry.h_dry,
-                     'h_wet': wet_dry.h_wet} if wet_dry is not None else None),
+                     'h_wet': wet_dry.h_wet,
+                     'shoreline_treatment': wet_dry.shoreline_treatment}
+                    if wet_dry is not None else None),
         'generated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
     }
 
@@ -662,6 +681,12 @@ def write_outputs(sim, data_array, output_dir: str, prefix: str, order: int,
     if getattr(sim, "hyperbolicity_summary", None):
         pd.DataFrame(sim.hyperbolicity_summary).to_csv(
             f"{prefix}_hyperbolicity_summary.csv", index=False)
+
+    # Opt-in (postprocessing.store_mass_budget), so the set of files a run
+    # writes by default is unchanged.
+    if getattr(sim, "mass_budget", None):
+        pd.DataFrame(sim.mass_budget).to_csv(
+            f"{prefix}_mass_budget.csv", index=False)
 
     if metadata is not None:
         with open(f"{prefix}_run.json", 'w', encoding='utf-8') as handle:

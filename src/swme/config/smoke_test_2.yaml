@@ -26,10 +26,8 @@
 #   diagnostics          full history plus the cell-by-cell spectrum of A(U)
 #
 # It produces every report page except the topography one. The bed is flat
-# here on purpose: a vacuum front over a sloping bed is *not* supported (the
-# bed-slope fluctuation is not positivity preserving at h -> 0, and the run
-# fails with a negative height). Topography is exercised, always wet, in
-# smoke_test_1.
+# here on purpose, to keep the dry front and the bed apart: topography is
+# exercised, always wet, in smoke_test_1.
 # ---------------------------------------------------------------------------
 # WHAT TO LOOK FOR
 #

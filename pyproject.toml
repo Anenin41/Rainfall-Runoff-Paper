@@ -16,14 +16,25 @@ dependencies = [
 ]
 
 [project.scripts]
+# Short names (swme/commands.py): with no argument they print their help.
+experiment = "swme.commands:experiment"
+report = "swme.commands:report"
+visual = "swme.commands:visual"
+docs = "swme.commands:docs"
+help = "swme.commands:help"
+purge = "swme.purge:main"
+# Long aliases, unchanged: with no argument they run with their defaults.
 moment-sw = "swme.cli:main"
 moment-sw-report = "swme.report.cli:main"
-purge = "swme.purge:main"
 moment-sw-view = "swme.viewer.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "pytest-cov"]
 docs = ["mkdocs>=1.6", "mkdocs-material>=9.5", "mkdocstrings[python]>=0.26"]
+
+[tool.uv]
+# `uv run docs` needs mkdocs, so the docs group is installed by default.
+default-groups = ["dev", "docs"]
 
 [build-system]
 requires = ["hatchling"]

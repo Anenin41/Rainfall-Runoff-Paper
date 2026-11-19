@@ -1,6 +1,6 @@
 # Interactive viewer
 
-`moment-sw-view` opens every run under a results directory in a local web app. It
+`uv run visual` opens every run under a results directory in a local web app. It
 shows what the [run report](reports.md) shows, but you can move through time, hover
 for values, zoom into a front, choose where the vertical profile is drawn, and put
 several runs on the same axes.
@@ -14,14 +14,15 @@ viewer is for exploring.
 The viewer is installed with the package, so a plain `uv sync` is all it needs:
 
 ```bash
-uv run moment-sw-view                    # every run under results/
-uv run moment-sw-view results/Dry_Wet_Test
-uv run moment-sw-view results/smoke_test_1
+uv run visual results                    # every run under results/
+uv run visual results/Dry_Wet_Test
+uv run visual results/smoke_test_1
 ```
 
 It prints a local address and opens it in your browser. The argument can be a whole
-results tree, one family of runs, or a single run directory. Nothing is re-run. Like
-`moment-sw-report`, it only reads finished output.
+results tree, one family of runs, or a single run directory. Without one, `uv run visual`
+prints its help; the alias `uv run moment-sw-view` opens `results/`. Nothing is re-run.
+Like `uv run report`, it only reads finished output.
 
 | Flag | Meaning |
 |:--|:--|
@@ -31,6 +32,7 @@ results tree, one family of runs, or a single run directory. Nothing is re-run. 
 | `--chunk-rows` | Rows per read chunk when streaming field history. Bounds memory only |
 | `--cache` | Runs kept loaded at once. Default 6 |
 | `--no-browser` | Do not open a browser tab |
+| `--debug` | Dash debug mode (error overlay, hot reload), and the server's log of every request. Without it the terminal shows only the start-up lines and errors |
 
 By default the viewer is reachable only from your own machine. It serves whatever is
 under the directory you give it, so pass `--host 0.0.0.0` only on a network you trust.
@@ -52,7 +54,8 @@ and ↻ re-scans the directory for runs that finished after the viewer started.
 Two controls along the top drive every view:
 
 - **Time.** The slider covers the stored steps. ▶ plays through them, ◀ and ▶| step
-  one stored step at a time, and the dropdown beside them sets the speed. Clicking a
+  one stored step at a time, the dropdown beside them sets the speed, and **GIF**
+  downloads the run as an animation (see [Playback](#playback)). Clicking a
   point on any space-time map moves the time there.
 - **Position `x`.** This picks the cell used for the vertical profile, the eigenvalue
   spectrum and the point time series. Leave it blank for a sensible default, type a
@@ -64,7 +67,16 @@ can zoom into a front and then play through it.
 
 ## Playback
 
-Moving through time is meant to read as motion, so the viewer does three things:
+Moving through time is meant to read as motion, so the viewer does four things:
+
+- **Playing runs in the browser.** Pressing ▶ hands the clock to the page. It moves the
+  slider and draws each stored step itself, from frames the server builds ahead of the
+  cursor, about 0.4 s of work at a time. There is no server round trip per frame. Each
+  frame is built by the same code, with the same settings, as the paused view at that
+  time, so what plays is what you would see by stopping there. If the next frame has
+  not arrived, the player waits for it rather than skipping it. The text panels (the
+  wet-dry cell counts, the topography caption) and the other tabs catch up when
+  playback stops, on the last step or when you pause.
 
 - **The axes stay still.** Every view that changes with time fixes its axes, and its
   colour scales, to the range the data covers over the *whole* run. Only the curves
@@ -79,9 +91,21 @@ Moving through time is meant to read as motion, so the viewer does three things:
   stays on screen. Pressing ▶ there starts again from the beginning. Stepping pauses
   playback.
 
-The speeds run from 0.25× to 2×, where 1× is one stored step every 0.3 s. In compare
-mode one step redraws four multi-run figures, so playback there never goes faster than
-1×. A faster tick would only queue behind the previous frame.
+The speeds run from 0.25× to 2×, where 1× is 20 stored steps a second, the same in both
+modes. The first play of a tab can only go as fast as the server builds frames.
+Measured on the 200-cell lake run, that is about 18 steps a second on Fields, 11 on
+Profiles (three figures) and 20 on Topography. A tab whose plots only move a cursor
+(Histories, Space-time) keeps up at any speed. Changing the run, the tab, `x`, the
+theme or a compare setting discards the frames buffered so far.
+
+**GIF export.** The **GIF** button beside the speed downloads the selected run's stored
+steps as an animated GIF that loops, playing at the chosen speed. It is drawn with
+matplotlib in the style of the PDF report, only when you press the button, and
+shows the panels of the report's final-state page at every stored step: `h`, `u_m`
+and every moment, with the free surface `h + Z` over the bed first when the run has
+topography. Every axis is fixed to the range over the whole run. Measured on the
+200-cell lake run, 400 stored steps take about 11 s and give a 2.3 MB file. The button
+is off in compare mode and for a run without field history.
 
 A stored step is a snapshot of the run, not a solver step. How many there are depends
 on the run's `history_stride` and on `--max-snapshots`.

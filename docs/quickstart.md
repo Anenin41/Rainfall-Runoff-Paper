@@ -46,13 +46,13 @@ The solver is driven by YAML config files. A set of them ships inside the packag
 
 ```bash
 # List the configs that come with the package
-uv run moment-sw --list-configs
+uv run experiment --list-configs
 
 # Run one by name
-uv run moment-sw --config wetdry_dam_break
+uv run experiment --config wetdry_dam_break
 
 # Run one by path, into a directory you choose
-uv run moment-sw --config path/to/case.yaml --output-dir results/my_case
+uv run experiment --config path/to/case.yaml --output-dir results/my_case
 ```
 
 With no `--config`, the default case in `src/swme/config/config.yaml` runs.
@@ -99,10 +99,10 @@ which flux scheme was used or what the bed looked like. See
 
 ```bash
 # From a finished run directory
-uv run moment-sw-report results/wetdry_dam_break
+uv run report results/wetdry_dam_break
 
 # Every run under a directory tree
-uv run moment-sw-report results/Dry_Wet_Test
+uv run report results/Dry_Wet_Test
 ```
 
 This reads the CSVs and writes `report.pdf` next to them. Because it works from files
@@ -112,7 +112,7 @@ anything. See [Run reports](reports.md).
 ## Explore runs interactively
 
 ```bash
-uv run moment-sw-view            # every run under results/, in the browser
+uv run visual results            # every run under results/, in the browser
 ```
 
 A local web app over the same files: move through time, hover for values, pick where the
@@ -224,12 +224,11 @@ uv run pytest -k "closed_form" -q               # a keyword subset
 uv add <package>                                # runtime dependency
 uv add --group dev <package>                    # dev-only dependency
 
-uv sync --group docs
-uv run mkdocs serve                             # docs preview at http://127.0.0.1:8000
-uv run mkdocs build --strict                    # fails on broken links and bad docstrings
+uv run docs serve                               # docs preview at http://127.0.0.1:8000
+uv run docs build --strict                      # fails on broken links and bad docstrings
 ```
 
-Run `mkdocs build --strict` before committing documentation changes.
+Run `uv run docs build --strict` before committing documentation changes.
 
 The repository is laid out as follows:
 
@@ -237,8 +236,8 @@ The repository is laid out as follows:
 src/swme/          core solver: transport, coefficients engine, mesh, topography,
                    wet-dry, schemes, simulation driver, CLI
 src/swme/config/   shipped YAML cases
-src/swme/report/   PDF run report (moment-sw-report), built from CSVs
-src/swme/viewer/   browser viewer (moment-sw-view, Dash + Plotly), same loader as the report
+src/swme/report/   PDF run report (uv run report), built from CSVs
+src/swme/viewer/   browser viewer (uv run visual, Dash + Plotly), same loader as the report
 src/recharge/      rainfall/infiltration/exfiltration extension, built on swme
 scripts/           run_thesis_configs.sh, run_smoke_tests.sh
 processing/        thesis Chapter 5 plotting scripts (not part of the package)

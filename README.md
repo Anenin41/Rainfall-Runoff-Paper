@@ -15,25 +15,31 @@ Requires [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync                                    # create .venv/ from pyproject.toml + uv.lock
-uv run moment-sw --list-configs            # the cases shipped in src/swme/config/
-uv run moment-sw --config smoke_test_1 --report
+uv run experiment --list-configs           # the cases shipped in src/swme/config/
+uv run experiment --config smoke_test_1 --report
 ```
 
 The last line runs one case, writes its CSVs to `results/smoke_test_1/` and builds a PDF
 report next to them. To check the install, run the test suite:
 
 ```bash
-uv run pytest -q                           # 1116 tests, ~9 min
+uv run pytest -q                           # 1144 tests, ~9 min
 ```
 
-## The four commands
+## The commands
+
+Each runs as `uv run <command>`. Given no argument, `experiment`, `report`, `visual` and
+`docs` print their help. The long names in brackets are aliases kept for old scripts; they
+keep their old defaults.
 
 | Command | What it does |
 |:--|:--|
-| `moment-sw` | Run a case from a YAML config. `--report` also writes a PDF; `--output-dir` chooses where results go |
-| `moment-sw-report <dir>` | Build the PDF report from a finished run, or from every run under a tree, without re-running |
-| `moment-sw-view [dir]` | Explore finished runs in the browser: move through time, zoom, overlay runs |
+| `experiment` (`moment-sw`) | Run a case from a YAML config. `--report` also writes a PDF; `--output-dir` chooses where results go |
+| `report <dir>` (`moment-sw-report`) | Build the PDF report from a finished run, or from every run under a tree, without re-running |
+| `visual <dir>` (`moment-sw-view`) | Explore finished runs in the browser: play through time, zoom, overlay runs, download a run as a GIF |
 | `purge` | List run directories under `results/` with their sizes. Deleting needs an explicit pattern and a confirmation |
+| `docs serve`, `docs build` | The documentation site (mkdocs) |
+| `help` | List these commands |
 
 A config is a YAML file with sections `pde`, `grid`, `numerics` and, optionally,
 `topography`, `wet_dry`, `postprocessing`. Unknown keys are rejected, so a typo fails
@@ -73,7 +79,7 @@ Each of these, and the rest of the measured limits, is explained in
 
 ## Documentation
 
-The documentation lives in [`docs/`](docs/) (`uv run --group docs mkdocs serve` to browse
+The documentation lives in [`docs/`](docs/) (`uv run docs serve` to browse
 it as a site):
 
 | Page | Contents |
@@ -82,8 +88,8 @@ it as a site):
 | [The model](docs/model.md) | The equations and where each term comes from |
 | [Numerical method](docs/numerics.md) | The finite-volume scheme, topography, dry ground |
 | [Configuration](docs/configuration.md) | Every config key |
-| [Run reports](docs/reports.md) | The PDF report (`moment-sw-report`) |
-| [Interactive viewer](docs/viewer.md) | The browser viewer (`moment-sw-view`) |
+| [Run reports](docs/reports.md) | The PDF report (`uv run report`) |
+| [Interactive viewer](docs/viewer.md) | The browser viewer (`uv run visual`) |
 | [What to watch out for](docs/limitations.md) | Measured limits of the solver |
 
 [`RESTRUCTURE_PLAN.md`](RESTRUCTURE_PLAN.md) records the design decisions, the

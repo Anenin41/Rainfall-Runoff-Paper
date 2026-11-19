@@ -8,20 +8,20 @@ where they apply, wet-dry behaviour and topography.
 
 ```bash
 # During the run
-uv run moment-sw --config wetdry_dam_break --report
+uv run experiment --config wetdry_dam_break --report
 
 # Afterwards, from the files on disk
-uv run moment-sw-report results/wetdry_dam_break
+uv run report results/wetdry_dam_break
 ```
 
 The second form matters more than it looks. It reads only the CSVs, so results
 produced months ago can be reported on without re-running anything, which for a large
 case is hours of compute saved.
 
-`moment-sw-report` also accepts a directory tree and reports on every run beneath it:
+`uv run report` also accepts a directory tree and reports on every run beneath it:
 
 ```bash
-uv run moment-sw-report results/Dry_Wet_Test
+uv run report results/Dry_Wet_Test
 ```
 
 Options:

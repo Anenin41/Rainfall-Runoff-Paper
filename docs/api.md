@@ -150,6 +150,26 @@ axes, and the colour helpers. See [Run reports](reports.md#how-the-pages-are-lai
         - ReportStyle
         - Prose
 
+## swme.report.animation
+
+The animated GIF behind the viewer's GIF button: the stored steps drawn with matplotlib
+in the report's style. See [Interactive viewer](viewer.md#playback).
+
+::: swme.report.animation
+    options:
+      members:
+        - build_animation
+        - gif_bytes
+
+## swme.commands
+
+The short command names (`uv run experiment`, `report`, `visual`, `docs`, `help`).
+
+::: swme.commands
+    options:
+      members:
+        - invoked_as
+
 ## swme.purge
 
 The output-directory listing and cleanup tool behind `uv run purge`.
@@ -190,7 +210,7 @@ docstring records what the seeded moment ratio is for and what it does not promi
 
 ## swme.viewer
 
-The interactive viewer behind `moment-sw-view`. The figure builders are plain functions
+The interactive viewer behind `uv run visual`. The figure builders are plain functions
 of a loaded `RunData` and can be used without the app, for example in a notebook.
 
 ::: swme.viewer.catalog

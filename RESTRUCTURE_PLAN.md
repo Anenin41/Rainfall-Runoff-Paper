@@ -1142,6 +1142,59 @@ budget still closes, to 4.6e-13. `tests/test_shoreline.py`: 222 tests (was 154),
 mutation checks: the subcritical root, the literal Case 3.1 reading, removing the climb
 and the all-moment HSWME flux each make tests fail.
 
+### Step 14: short command names
+
+`uv run experiment`, `report`, `visual`, `docs` and `help` (`swme/commands.py`). Each
+short name runs the same code as its long alias. Given no argument it prints its help,
+because `experiment` would otherwise look for a `config.yaml` that does not exist and
+`visual` would start a server. `moment-sw`, `moment-sw-report` and `moment-sw-view` stay,
+with their old defaults, so `scripts/*.sh` and anything else that calls them is
+unaffected. Bare `uv run` is uv's own command and cannot be changed. `uv run docs` needs
+mkdocs, so the `docs` dependency group is now installed by default
+(`[tool.uv] default-groups`). The docs, README, CLAUDE.md and config headers now use the
+short names.
+
+### Step 15: viewer playback in the browser
+
+Playback was one server round trip per frame: the 300 ms tick at 1×, about 60 ms of
+plotly figure building (60 % of it in `make_subplots`), the response, the redraw. It
+showed about 3 frames a second. Now the clock runs in the page (`assets/playback.js`).
+It moves the slider and draws each stored step from frames the server builds ahead in
+batches of about 0.4 s of work (`frame_batch`). The frames come from the same builders,
+with the same arguments, as each tab's time-only update (`playback_frame`). While
+playing, the server ignores the slider moves; it publishes the time when playback stops,
+so every view, the text panels included, is then redrawn exactly.
+
+Decisions:
+
+- **Frames from the server's builders, not recomputed in JavaScript.** Recomputing would
+  have meant a second implementation of nine figure builders that pytest cannot test.
+  Building on the server keeps the played picture identical to the paused one by
+  construction. `test_a_played_frame_is_the_paused_view` asserts it for every tab and
+  for compare mode, with a negative control. The cost is that the first play of a tab is
+  limited by the server: measured on the 200-cell lake run, 18 frames a second on Fields,
+  11 on Profiles and 20 on Topography.
+- **The player waits for a missing frame rather than skipping it.**
+- **The speeds** are now 5, 10, 20 and 40 frames a second (0.25× to 2×). Compare mode is
+  no longer capped at 1×; the cap was there to stop ticks queueing behind the server.
+- **Quiet server.** Without `--debug`, werkzeug's log of every request (several a second
+  while playing) and its development-server notice are off; errors still show.
+
+`playback.js` is outside pytest. It was run in node against a stand-in Plotly and Dash
+(the scratch check is not in the repo), with a negative control: a player that skips
+missing frames fails it.
+
+### Step 16: GIF export
+
+The viewer's GIF button downloads the selected run's stored steps as a looping GIF at the
+chosen speed (`swme/report/animation.py`), drawn only when asked. The panels are those of
+the report's final-state page, plus the free surface over the bed when there is
+topography, with every axis fixed over the whole run. Blitting draws the axes once: on
+the lake run, 240 steps took 6 s with it and about 50 s without. The viewer's 400 steps
+take 11 s and give 2.3 MB. GIF frame delays are rounded to 10 ms and held at 20 ms or
+more, because browsers slow shorter delays down to 100 ms. Tests check that every curve
+of frame k is stored state k, with a mutation check (drawing h as u_m fails them).
+
 ---
 
 ## 6. Findings and limitations

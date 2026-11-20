@@ -12,7 +12,7 @@ what a nearly-dry cell means. It is applied ONLY when reading primitives out of
 a state - never to the conserved state array itself, which stays exactly what
 the finite-volume update produced.
 
-Three regimes, separated by two thresholds (RESTRUCTURE_PLAN.md §2.3):
+Three regimes, separated by two thresholds (RESTRUCTURE_PLAN.md section 3):
 
 * h >= h_wet   fully wet. Primitives are the plain q/h, evaluated by exactly
                the arithmetic used before wet-dry existed, so runs that never
@@ -25,7 +25,7 @@ Three regimes, separated by two thresholds (RESTRUCTURE_PLAN.md §2.3):
                and drives the velocity smoothly to zero; the moments are
                already zero from the ramp.
 
-Deviation from the plan, deliberate. §2.3 wrote the desingularization with
+Deviation from the plan, deliberate. The plan wrote the desingularization with
 `max(h, eps_div)` and separately demanded `u_m = 0 exactly` below `h_dry`.
 Those two do not fit together: with eps_div ~ 1e-14 the desingularization never
 activates above machine noise, so the only thing shaping the velocity would be
@@ -52,7 +52,7 @@ from . import coefficients
 
 @dataclass(frozen=True)
 class WetDryThresholds:
-    """The two-tier epsilon convention of RESTRUCTURE_PLAN.md §2.3(a).
+    """The two-tier epsilon convention of RESTRUCTURE_PLAN.md section 3.1.
 
     Attributes
     ----------
@@ -119,9 +119,6 @@ class WetDryThresholds:
                 f"h_wet ({self.h_wet}) must be > h_dry ({self.h_dry}); the "
                 "transition band needs positive width for the moment ramp."
             )
-
-    def is_dry(self, h) -> bool:
-        return h <= self.h_dry
 
     def moment_ramp(self, h: float) -> float:
         """Linear ramp, 0 at h_dry and 1 at h_wet, clipped outside."""
@@ -206,8 +203,8 @@ def desingularized_primitives_array(order: int,
                                     thresholds: WetDryThresholds = DEFAULT_THRESHOLDS):
     """Vectorized `desingularized_primitives` over a (M, order+2) state array.
 
-    Used by `compute_max_wavespeed` and `convert_to_primitive`, which see the
-    whole grid at once. Same three regimes, same values.
+    Used by `compute_max_wavespeed`, which sees the whole grid at once. Same
+    three regimes, same values.
     """
     values = np.asarray(values, dtype=np.float64)
     h = values[:, 0]
@@ -268,7 +265,8 @@ def drains_a_dry_cell(h_left: float, h_right: float, mass_flux: float,
     has two interfaces). For an exactly dry cell any loss at all is rejected.
 
     This is the second trigger of the shoreline treatment. It catches what
-    the geometric test of `emerged_bed_side` cannot see: water receding from
+    the case analysis of `one_sided_problem` hands back to the ordinary
+    scheme (Castro's Case 3.3, a submerged step): water receding from
     a dry cell whose bed is only just submerged, where the linearised
     Riemann solution has a negative depth on the dry side (N = 0, Roe, wet
     cell L below a dry cell with bed step d: the dry cell is drained when

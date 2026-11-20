@@ -47,6 +47,7 @@ from . import timeIntegration
 from . import topography as topography_module
 from .wetdry import WetDryThresholds
 from .commands import invoked_as
+from .report.data import summary_from_history
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _CONFIG_DIR = _PACKAGE_DIR / 'config'
@@ -639,32 +640,17 @@ def write_outputs(sim, data_array, output_dir: str, prefix: str, order: int,
 
     if getattr(sim, "history", None):
         history_frames = []
-        summary_rows = []
         for entry in sim.history:
-            step, time, snapshot = entry["step"], entry["time"], entry["data"]
-            snapshot_df = pd.DataFrame(snapshot, columns=columns)
-            snapshot_df.insert(0, "time", time)
-            snapshot_df.insert(0, "step", step)
+            snapshot_df = pd.DataFrame(entry["data"], columns=columns)
+            snapshot_df.insert(0, "time", entry["time"])
+            snapshot_df.insert(0, "step", entry["step"])
             history_frames.append(snapshot_df)
-
-            summary = {
-                "step": step,
-                "time": time,
-                "mean_h": snapshot_df["h"].mean(),
-                "mean_u_m": snapshot_df["u_m"].mean(),
-                "min_h": snapshot_df["h"].min(),
-                "max_h": snapshot_df["h"].max(),
-            }
-            for i in range(1, order + 1):
-                ai = f"a{i}"
-                summary[f"mean_{ai}"] = snapshot_df[ai].mean()
-                summary[f"min_{ai}"] = snapshot_df[ai].min()
-                summary[f"max_{ai}"] = snapshot_df[ai].max()
-            summary_rows.append(summary)
 
         pd.concat(history_frames, ignore_index=True).to_csv(
             f"{prefix}_field_history.csv", index=False)
-        pd.DataFrame(summary_rows).to_csv(
+        # The per-step spatial statistics, computed by the report's own
+        # function so the CSV and an in-process report cannot disagree.
+        summary_from_history(sim.history, order).to_csv(
             f"{prefix}_summary_history.csv", index=False)
 
     # Gated on their own contents, not on the field history. Nesting these

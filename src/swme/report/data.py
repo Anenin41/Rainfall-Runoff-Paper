@@ -29,7 +29,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .. import coefficients  # noqa: F401  (documents the profile provenance)
 from ..wetdry import DEFAULT_THRESHOLDS, WetDryThresholds
 from .history import (
     DEFAULT_CHUNK_ROWS,
@@ -273,6 +272,26 @@ class RunData:
         ]
 
 
+def fmt(value, spec: str = ".6g", nonfinite: str | None = None) -> str:
+    """A value as the report and the viewer print it in their tables.
+
+    None is "unknown", a bool "yes" or "no", an integer its digits, a float
+    `format(value, spec)`. `nonfinite`, if given, replaces a NaN or an
+    infinity (the viewer shows "n/a"); otherwise it prints as `nan` or `inf`.
+    """
+    if value is None:
+        return "unknown"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if nonfinite is not None and not np.isfinite(value):
+            return nonfinite
+        return format(float(value), spec)
+    return str(value)
+
+
 def primitive_columns(order: int) -> tuple[str, ...]:
     return ("x", "h", "u_m", *(f"a{i}" for i in range(1, order + 1)))
 
@@ -387,10 +406,9 @@ def from_simulation(sim,
 
 
 def summary_from_history(history, order: int) -> pd.DataFrame:
-    """Per-step spatial statistics, matching `cli.write_outputs` column for column.
-
-    Duplicated rather than imported so that `swme.report` never imports the CLI;
-    a test asserts the two loaders agree, which catches any drift.
+    """Per-step spatial statistics of a run's stored history: the
+    `<stem>_summary_history.csv` that `cli.write_outputs` writes, and the
+    time histories of an in-process report.
     """
     columns = primitive_columns(order)
     rows = []

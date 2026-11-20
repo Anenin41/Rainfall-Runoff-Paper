@@ -96,38 +96,7 @@ class SWME1DPlotClassical(Plotting):
     def plot(self):
         creates a plotting object and plots the simulation results
 
-    Methods overriden from abstract parent class 'Plotting
-    ------------------------------------------------------
-    def __init__(self,pde_type):
-        initializes the plotting object
-
     """
-
-    def __init__(self,
-                 pde_type: pde.SWME1D,
-                 mesh: mesh.RectangularMesh,
-                 simulation: simulation.ClassicalSimulation1D):
-        """
-        initializes the classical SWME1D plotting object
-
-        Parameters
-        ------------
-        pde_type : SWME1D
-            the SWME1D moment model
-        mesh : RectangularMesh
-            the numerical simulation mesh
-        simulation : ClassicalSimulation1D
-            the simulation object
-
-        Returns
-        --------        
-        None
-
-        """
-
-        self.pde_type = pde_type 
-        self.mesh = mesh
-        self.simulation = simulation
 
     def plot(self,
              data_array: np.ndarray):
@@ -141,12 +110,16 @@ class SWME1DPlotClassical(Plotting):
 
         print('total mass = ',np.sum(data_array[:,1]*data_array[:,2]))
 
+        # Three panels, then one per moment, three to a row: the 3 x 3 grid
+        # for N <= 6, one more row per three moments above that.
+        rows = max(3, -(-(3 + order) // 3))
+
         plt.figure()
-        plt.subplot(3,3,1)
+        plt.subplot(rows,3,1)
         plt.plot(velocity_profile[np.floor_divide(self.mesh.resolution,2),:], z)
         plt.title('Velocity profile')
 
-        plt.subplot(3,3,2)
+        plt.subplot(rows,3,2)
         if getattr(self.mesh, 'has_topography', False):
             # Over a non-flat bed the water depth h on its own is close to
             # unreadable - a lake at rest looks like an inverted bump. Show
@@ -162,13 +135,13 @@ class SWME1DPlotClassical(Plotting):
             plt.plot(self.mesh.cell_center_positions, data_array[:,1])
             plt.title('Height')
 
-        plt.subplot(3,3,3)
+        plt.subplot(rows,3,3)
         plt.plot(self.mesh.cell_center_positions, data_array[:,2])
         plt.title('Velocity')
 
         k = 4
         for i in range(order):
-            plt.subplot(3,3,k)
+            plt.subplot(rows,3,k)
             plt.plot(self.mesh.cell_center_positions, data_array[:,3+i])
             plt.title('alpha_'+str(i+1))
             k += 1

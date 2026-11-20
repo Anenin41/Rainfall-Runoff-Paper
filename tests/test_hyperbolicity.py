@@ -370,3 +370,49 @@ class TestEndToEndDetection:
                     if "Complex spectra" in str(w.message)]
         assert scheme.spectra_examined > 0
         assert scheme.nonhyperbolic_count == 0
+
+
+# ---------------------------------------------------------------------------
+# the end-of-run warning names the model the run actually used
+# ---------------------------------------------------------------------------
+
+def _spectra_warning(sim, t_end):
+    import warnings
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sim.run_simulation(t_end)
+    messages = [str(w.message) for w in caught
+                if "Complex spectra" in str(w.message)]
+    assert messages, "the run was expected to trip the scheme counters"
+    return messages[0]
+
+
+def _dry_dam_break(order, hyperbolic):
+    """A dam break onto a dry bed trips the interface counters at any order,
+    for a model that is hyperbolic at every state."""
+    pde = SWME1D('damBreak_dryBed', 0.0, 1.0, hyperbolic, False)
+    mesh = mesh_module.UniformRectangularMesh1D([-1.0, 1.0], 40)
+    return ClassicalSimulation1D(order, pde, mesh, 'INFLOW_OUTFLOW',
+                                 'damBreak_dryBed', sd.Roe(),
+                                 timeIntegration.ExplicitEuler())
+
+
+class TestSpectraWarningNamesTheModel:
+    """The warning used to call every run "the N=... SWME system" and say it
+    was hyperbolic only for N <= 1, whatever the closure and the order."""
+
+    def test_hswme_is_named_hswme(self):
+        message = _spectra_warning(_dry_dam_break(2, True), 0.2)
+        assert "HSWME at N=2 is hyperbolic at every state" in message
+        assert "SWME system" not in message
+
+    def test_low_order_swme_is_not_said_to_be_at_risk(self):
+        message = _spectra_warning(_dry_dam_break(0, False), 0.2)
+        assert "SWME at N=0 is hyperbolic at every state" in message
+        assert "only unconditionally hyperbolic for N <= 1" not in message
+
+    def test_swme_at_n2_is_said_to_be_at_risk(self):
+        sim, _ = _run(hyperbolic=False)
+        message = _spectra_warning(sim, 0.05)
+        assert "SWME at N=2 can lose hyperbolicity" in message
+        assert "postprocessing.store_hyperbolicity: true" in message

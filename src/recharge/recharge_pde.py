@@ -39,7 +39,7 @@ class RechargeSWME1D(SWME1D):
     ):
         # The recharge source S_{R,I}(U) - P(U) is affine in U and is returned
         # as a vector; it has no matrix form. With linear_source=True,
-        # `timeIntegration.Implicit` would compute `S(U) @ U` - a scalar dot
+        # `timeIntegration.ImplicitEuler` would compute `S(U) @ U` - a scalar dot
         # product broadcast into every component - and silently corrupt the
         # state. Use ImplicitEuler with linear_source=False (Newton) instead.
         if linear_source:

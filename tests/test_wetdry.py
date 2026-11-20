@@ -638,3 +638,18 @@ class TestHyperbolicityUnderDrying:
         )
         # Identical across orders, because it is not about the moments at all.
         assert counts[0] == counts[1] == counts[2]
+
+
+class TestStiffnessHintNamesValidSettings:
+    """The negative-depth hint used to recommend `linear_source = True with
+    timeIntegrator = ImplicitEuler`: a key that does not exist, and for
+    RechargeSWME1D a combination the config loader rejects."""
+
+    def test_the_hint_names_the_config_keys_and_the_recharge_exception(self):
+        pde = SWME1D('damBreak_dryBed', 0.01, 0.05, False, False)
+        with pytest.raises(RuntimeError, match="stiff near") as error:
+            run(pde, 1, 'damBreak_dryBed', resolution=120, t_end=0.15)
+        message = str(error.value)
+        assert "numerics.time_integrator: ImplicitEuler" in message
+        assert "linear_source: false (Newton) for RechargeSWME1D" in message
+        assert "timeIntegrator" not in message

@@ -82,6 +82,13 @@ class FieldSnapshots:
         return self.values[:, :, self.columns.index(name)]
 
 
+def sample_indices(count: int, budget: int) -> np.ndarray:
+    """At most `budget` evenly spaced indices into `count` items, ends included."""
+    if count <= budget:
+        return np.arange(count)
+    return np.unique(np.linspace(0, count - 1, budget).round().astype(int))
+
+
 def select_steps(steps, max_snapshots: int = DEFAULT_MAX_SNAPSHOTS) -> np.ndarray:
     """Evenly spaced subset of `steps`, always including the first and last.
 
@@ -90,10 +97,7 @@ def select_steps(steps, max_snapshots: int = DEFAULT_MAX_SNAPSHOTS) -> np.ndarra
     steps = np.asarray(sorted(set(int(s) for s in steps)), dtype=np.int64)
     if max_snapshots < 1:
         raise ValueError(f"max_snapshots must be >= 1, got {max_snapshots}.")
-    if len(steps) <= max_snapshots:
-        return steps
-    picks = np.linspace(0, len(steps) - 1, max_snapshots).round().astype(int)
-    return steps[np.unique(picks)]
+    return steps[sample_indices(len(steps), max_snapshots)]
 
 
 def steps_in_field_history(path, chunk_rows: int = DEFAULT_CHUNK_ROWS) -> np.ndarray:

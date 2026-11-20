@@ -17,7 +17,8 @@ changes, update the relevant section rather than silently diverging from it.
 
 ## Status
 
-**All steps complete (0 through 9).** 685 tests pass.
+**All steps complete (0 through 9).** 685 tests passed at that point. Steps 10-29 below
+followed (1153 tests on 2026-11-20).
 
 | Step | Scope | Status |
 |:--|:--|:--|
@@ -196,8 +197,8 @@ nonzero `f_R, f_I` from its mixing-friction closure:
 ```
 P[0]   = 0
 P[1]   = f_R*u_s + (f_I + nu/lambda)*u_b
-P[i+2] = (2i+1)*(f_R*phi_i(1)*u_s + (f_I + nu/lambda)*phi_i(0)*u_b)
-         + (2i+1)*(nu/h**2) * sum_j C[i,j]*U[j+2]
+P[i+1] = (2i+1)*(f_R*phi_i(1)*u_s + (f_I + nu/lambda)*phi_i(0)*u_b)
+         + (2i+1)*(nu/h**2) * sum_j C[i,j]*U[j+1]
 ```
 
 **Recharge mass source `S_{R,I}(U)`** — zero when `R = I = 0`:
@@ -205,7 +206,7 @@ P[i+2] = (2i+1)*(f_R*phi_i(1)*u_s + (f_I + nu/lambda)*phi_i(0)*u_b)
 ```
 S[0]   = R - I
 S[1]   = R*u_s - I*u_b
-S[i+2] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
+S[i+1] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
          + (2i+1)*I*(-phi_i(0)*u_b + u_m*s_i + sum_j F[i,j]*alpha_j)
 ```
 
@@ -1194,6 +1195,212 @@ the lake run, 240 steps took 6 s with it and about 50 s without. The viewer's 40
 take 11 s and give 2.3 MB. GIF frame delays are rounded to 10 ms and held at 20 ms or
 more, because browsers slow shorter delays down to 100 ms. Tests check that every curve
 of frame k is stored state k, with a mutation check (drawing h as u_m fails them).
+
+### Step 17: the two wrong messages of the time loop (overnight 2026-11-20)
+
+Message text only; no output file changes (`check_outputs.sh`: every shipped config's
+CSVs and run.json, the report pages and the viewer figures identical to the baseline).
+
+- The end-of-run "Complex spectra" warning called every run "the N=... SWME system" and
+  said it was hyperbolic only for N <= 1, for HSWME runs and N = 0 runs alike. It now
+  names the closure and order the run used: hyperbolic at every state (HSWME, or SWME at
+  N <= 1), or able to lose hyperbolicity (SWME at N >= 2). The config key is spelled
+  `postprocessing.store_hyperbolicity: true`.
+- The negative-depth hint recommended `linear_source = True with timeIntegrator =
+  ImplicitEuler`: a key that does not exist, and for `RechargeSWME1D` a combination the
+  loader rejects. It also fired for runs that already integrate the source implicitly.
+  It now fires only for an explicit source step and names `numerics.time_integrator:
+  ImplicitEuler` with `linear_source: true` (SWME1D, HSWME1D) or `false` (Newton,
+  RechargeSWME1D).
+
+Tests: `TestSpectraWarningNamesTheModel` (3) in `tests/test_hyperbolicity.py` and
+`TestStiffnessHintNamesValidSettings` (1) in `tests/test_wetdry.py`; all four fail on the
+previous code. Suite 1144 -> 1148.
+
+### Step 18: docs that contradicted the code (recharge, bed profiles)
+
+- `docs/model.md` gave the Horton *capacity* \(f_p(t)\) as the infiltration rate; the
+  code removes \(\min(f_p, R + h/\Delta t)\) (ponded, default) or
+  \(\min(f_p, R, h/\Delta t)\) (legacy). It now says so, states the sign convention of
+  \(I\), and gives the mixing-friction closure \(f_R = \alpha_R R\),
+  \(f_I = \alpha_I \max(0, -I)\) with the terms it adds to \(P(U)\).
+- `alpha_I` was described as the coefficient "for infiltration" in `docs/model.md` and
+  `docs/configuration.md`. It acts on exfiltration only (`laws.AdmissibleMixingFriction`),
+  so it is inert under Horton infiltration.
+- `constant_infiltration_eps` was described as a guard "against removing water from an
+  empty cell"; it floors \(\Delta t\) in \(h/\Delta t\).
+- `docs/numerics.md` listed the bed profiles without `basin_dam`.
+
+Docs only. `mkdocs build --strict` clean; suite 1148; outputs identical.
+
+### Step 19: stale docstrings and comments
+
+Comments and docstrings only.
+
+- `pde.py`, `recharge_pde.py`: the class that applies a matrix source is
+  `ImplicitEuler(linear=True)`, not `timeIntegration.Implicit` (the abstract base);
+  `SWME1D` has no constructor check on `linear_source` (the config loader has).
+- `source_terms.py`: the module docstring still said "NOT YET WIRED INTO pde.py ... before
+  Step 3 wires this module in"; `compute_friction_operator_matrix` still referred to
+  closed forms "per hardcoded order".
+- Section references to this plan (`§2.3`, `§2.3(a)`, `§2.3(c)`) now point to sections 3,
+  3.1 and 3.3, where the wet-dry design is. `wetdry.drains_a_dry_cell` referred to
+  `emerged_bed_side`, removed on 2026-11-19; `desingularized_primitives_array` claimed a
+  caller (`convert_to_primitive`) it does not have.
+- `simulation.py`: the "Hyperbolicity report" comment sat above the clamping audit; it
+  now introduces the hyperbolicity warning it describes.
+
+Suite 1148; outputs identical.
+
+### Step 20: one copy of the path quadrature in the schemes
+
+`spatialDiscretization.py`, 541 -> 459 lines.
+
+- The five quadrature nodes and weights were written out four times, once in each
+  `compute_fluctuation` and `compute_generalized_roe_and_viscosity` of `PVM` and `Osher`,
+  each with a commented-out one-point rule. They are now `_QUADRATURE_NODES` and
+  `_QUADRATURE_WEIGHTS`, with a comment saying they are the mis-transcribed nodes of the
+  Step 10 audit, kept on purpose (the fix is an open decision). The values are the same
+  expressions, so the same floats.
+- The path integral is one helper, `_weighted_path_matrices`, and one method per scheme
+  family, `_roe_and_viscosity_matrices`: the path average and `P(average)` for `PVM`,
+  the path average and `sum_k |w_k A(psi(s_k))|` for `Osher`. `Osher` no longer overrides
+  `compute_fluctuation` and `compute_generalized_roe_and_viscosity`, and its
+  `compute_viscosity`, a verbatim copy of Roe's, is now `Roe.compute_viscosity`.
+- `import mpmath` was unused. The Osher docstring ("TODO") now says what the scheme is;
+  the docstring signatures no longer list a `direction` argument that does not exist.
+
+Verified bit for bit beyond the shipped configs, which never use LF or PRICE: Roe, Osher,
+LF and PRICE, both methods, N = 0, 1, 2, 4, SWME and HSWME, plain and augmented matrices,
+40 random state pairs each (2560 evaluations), old against new with `np.array_equal`,
+hyperbolicity counters included. The comparison fails when one weight is moved by one
+ulp. Suite 1148; outputs identical.
+
+### Step 21: initial conditions without the zero assignments
+
+`SWME1D.get_initial_values` started from a zero array and then assigned zero to it about
+120 times (`if order > k: initial_values[k+2] = 0`, `0*initial_values[0]`). Each case
+now sets only its non-zero entries; `pde.py` 1165 -> 934 lines. The two cases that seed
+`h*a_i = 1` (`smooth_wave`, `smooth_wave_smallHeightGradient`) do so for `i <= 6` only,
+as before, and the comment now says so (finding: higher moments stay zero).
+
+Most of these initial conditions are in no shipped config, so the check was direct: every
+initial condition, N = 0 to 8, at 2203 positions including every breakpoint, old against
+new, compared as bytes (the sign of zero counts): 356 886 evaluations, none differ. A
+deliberately broken copy (moments seeded up to N = 5) differs in 13 218. The one
+difference outside that range: `linearHeight_noVelocity` for x < -10, where `h < 0`, used
+to store a discharge of `-0.0` (`0*h`) and now stores `0.0`. That state has a negative
+depth, which the solver rejects at its first matrix evaluation. Suite 1148; outputs
+identical.
+
+### Step 22: the time loop defines its helpers once
+
+`simulation.py`: `compute_all_fluctuations` was redefined inside the `while` loop at every
+step; it is now defined once before the loop (it closes over arrays whose identity never
+changes). The hyperbolicity snapshot looked up the dry threshold inside its per-cell loop;
+it is read once. `_post_processing` filled the `x` column with a Python loop; it is one
+slice assignment. Suite 1148; outputs identical (these paths run in every shipped config;
+the hyperbolicity one in the three smoke tests).
+
+### Step 23: one `fmt` for the report and the viewer
+
+`report/pages.py` (`_fmt`) and `viewer/figures.py` (`fmt`) had the same function, except
+that the viewer prints "n/a" for a NaN or an infinity where the report prints `nan` or
+`inf`. It is now `report.data.fmt(value, spec, nonfinite=None)` (the matplotlib-free
+layer both already import); the report uses it as is, the viewer with
+`nonfinite="n/a"`. Checked directly: 24 kinds of value (None, bools, numpy and Python
+integers and floats, signed zero, NaN, both infinities, strings, tuples) under four format
+specs give the same string as before in both callers. Suite 1148; outputs identical
+(report pages and viewer figures included).
+
+### Step 24: one helper for evenly spaced picks
+
+`np.unique(np.linspace(0, n - 1, k).round().astype(int))` was written out at six places
+(`history.select_steps`, `style.curve_times`, the profile cells of
+`pages.page_velocity_profiles`, `figures.decimate_rows`, the profile times of
+`figures.profile_lines_figure`, `app.time_grid`), each with its own `min(k, n)` or length
+guard, next to `figures.sample_indices`, which already was that helper. The helper now
+lives in `report/history.py` (matplotlib-free, imported by both packages) and all six
+call it. `figures._ordinal_ramp` picks colours without `np.unique` and is left alone.
+
+Checked directly: for every `count` in 0..59 and `budget` in 0..69 the helper returns
+exactly the old expression, dtype included (4200 pairs). Suite 1148; outputs identical
+(report pages and viewer figures included).
+
+### Step 25: dead code
+
+Removed, each with no caller in `src/`, `tests/`, `docs/` or the viewer's JavaScript:
+`WetDryThresholds.is_dry` (the code compares with `h_dry` directly everywhere),
+`SWME1D.exact_source_computation` (set, never read), `viewer.figures.time_range`, and the
+`from .. import coefficients  # noqa` in `report/data.py`, an unused import kept "to
+document provenance". Suite 1148; outputs identical.
+
+### Step 26: `--plot` no longer crashes for N >= 7
+
+`plotting.SWME1DPlotClassical.plot` put the moment panels into a fixed 3 x 3 grid, so
+N >= 7 asked matplotlib for panel 10 of 9 and raised `ValueError`. The grid now has
+`max(3, ceil((3 + N)/3))` rows: unchanged for N <= 6. New `tests/test_plotting.py`
+(5 cases, N = 0, 3, 6, 7, 10: one panel per moment, and the row count); N = 7 and 10 fail
+on the previous code. Suite 1148 -> 1153; outputs identical.
+
+### Step 27: the scripts' `--help` prints the comment block only
+
+`scripts/run_thesis_configs.sh --help` printed lines 2-17 of the script and
+`run_smoke_tests.sh --help` lines 2-29, both running past the header comment into
+`set -uo pipefail`. Now 2-15 and 2-26. Shell only; no test or output reads `scripts/`
+(verified together with Step 26: suite 1153, outputs identical).
+
+### Step 28: two constructors that repeated their base class
+
+`SWME1DPlotClassical.__init__` was a line-for-line copy of `Plotting.__init__` (with
+docstring, 25 lines); it is gone. `UniformRectangularMesh1D.__init__` repeated
+`RectangularMesh.__init__` before adding the bed attributes; it now calls it. The base
+docstring said "the PDE object" for the mesh. Suite 1153; outputs identical.
+
+### Step 29: one summary-history function
+
+`cli.write_outputs` built the rows of `<stem>_summary_history.csv` with its own copy of
+`report.data.summary_from_history`; the report's docstring said it was duplicated "so
+that `swme.report` never imports the CLI". The CLI importing the report's data layer has
+no such problem (pandas and numpy only, no matplotlib: a plain `import swme.cli` still
+leaves matplotlib out of `sys.modules`, and `tests/test_report.py` asserts it for a run).
+`write_outputs` now calls it. The summary CSV of every shipped config hashes identically,
+which checks the two were the same function. Suite 1153; outputs identical.
+
+### Step 30: test counts and one stale recommendation
+
+README: 1153 tests (was 1144). This plan's Status line said "685 tests pass" as if it were
+current. `docs/configuration.md`'s warning about `Exact` recommended `ImplicitEuler` with
+`linear_source: true` without the `RechargeSWME1D` exception. Docs only; suite 1153.
+
+**Overnight check of the whole restructure (Steps 17-30).** Besides the per-step check
+of every shipped config at a shortened `t_end`, the eight non-thesis configs
+(`smoke_test_1-3`, `rain_fills_lake_overtops_dam`, `wetdry_dam_break`,
+`topography_lake_at_rest`, `topography_perturbed_lake`, `config`) were run at their full
+`t_end` with the start-of-night tree (`ba19f2a`) and the final one: all 39 output files
+identical (sha256; `run.json` without timestamps and paths). The `thesis_*` configs were
+checked at 1.5-15 % of their `t_end` only.
+
+### Step 31: the moment rows of P and S are entry i+1
+
+`docs/model.md`, section 1 of this plan, and the docstrings of
+`swme.source_terms.compute_navier_slip_friction`,
+`recharge.source_terms.compute_recharge_mass_source` and `compute_mixing_friction` wrote
+moment `i` (1-based, weight `2i+1`) of the friction and recharge terms as entry `i+2`,
+and `U[j+2]` for `h a_j`. The state stores `h` at 0, `h u_m` at 1 and `h a_i` at `i+1`,
+which is how the same pages already index the rows of `A(U)`; the code does it that way
+(`compute_navier_slip_friction(2, [1, 0.3, 0, 0], 1, 1)` is `[0, 0.3, 0.9, 1.5]`: entry 2
+is `3 u_b`, moment 1). Docs and docstrings only. `mkdocs build --strict` clean; suite
+1153; outputs identical.
+
+### Step 32: the thesis configs at full length, before and after
+
+Plan entry only. Every `thesis_*` config (20) was run to its full `t_end` with the
+start-of-night tree (`ba19f2a`) and the tree after Step 30 (Step 31 changed docstrings and
+docs only): all 80 output files identical (sha256; `run.json` without timestamps and
+paths). With the eight non-thesis configs of Step 30, every shipped config has now been
+compared at full length: 119 files, none different. The `processing/` figure scripts were
+not rerun; they read only these files.
 
 ---
 

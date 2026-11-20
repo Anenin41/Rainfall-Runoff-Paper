@@ -133,7 +133,7 @@ startup rather than a quietly wrong result.
 ### Available bed profiles
 
 `flat`, `gaussian_bump`, `parabolic_bump`, `linear_slope`, `sinusoidal`, `step`,
-`tanh_step`.
+`tanh_step`, `basin_dam`.
 
 Each takes its own parameters, given as extra keys in the `topography` section. An
 unknown parameter name is an error, so a misspelling does not silently do nothing. The

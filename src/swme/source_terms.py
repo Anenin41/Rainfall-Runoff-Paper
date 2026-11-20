@@ -17,11 +17,11 @@ the moment coefficients), not friction physics, so sharing it does not blur the
 swme/recharge boundary: the *transport* representation is shared, only the
 extra *source* terms are recharge-specific.
 
-NOT YET WIRED INTO `pde.py`: staged here so `tests/test_pde_regression.py` can
-validate `compute_navier_slip_friction` and `compute_friction_operator_matrix`
-against the still-present hardcoded `SWME1D.compute_source_term` /
-`SWME1D._compute_source_matrix_inverse` (Step 2) before Step 3 wires this
-module in and deletes the hardcoded blocks.
+`SWME1D.compute_source_term` returns `-compute_navier_slip_friction(...)`, and
+`SWME1D._compute_source_matrix_inverse` inverts `I - dt*S(h)` with `S(h)` from
+`compute_friction_operator_matrix`. Both are pinned by
+`tests/test_pde_regression.py` against reference values captured from the
+hardcoded per-order code they replaced (RESTRUCTURE_PLAN.md Steps 2 and 3).
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ def compute_navier_slip_friction(
 
         P_slip[0] = 0
         P_slip[1] = (nu/lambda)*u_b
-        P_slip[i+2] = (2i+1)*(nu/lambda)*phi_i(0)*u_b
-                      + (2i+1)*(nu/h^2)*sum_j C[i,j]*U[j+2],   i = 1..N
+        P_slip[i+1] = (2i+1)*(nu/lambda)*phi_i(0)*u_b
+                      + (2i+1)*(nu/h^2)*sum_j C[i,j]*U[j+1],   i = 1..N
 
     The RHS source contribution is `S_{R,I}(U) - P(U)` (thesis eq. 3.38); for
     plain SWME/HSWME (no recharge), P(U) = P_slip(U), so
@@ -127,9 +127,9 @@ def compute_friction_operator_matrix(
 ) -> np.ndarray:
     """S(h): the linear operator such that d(w)/dt = S(h) @ w under pure
     Navier-slip friction, treating h as frozen at the given value (valid since
-    dh/dt = 0 under friction alone) - the same reduced linear ODE that
-    `SWME1D._compute_source_matrix_inverse` solves in closed form per
-    hardcoded order via `(I - dt*S(h))^{-1}`. Row/column 0 (h) are zero:
+    dh/dt = 0 under friction alone). `SWME1D._compute_source_matrix_inverse`
+    takes one implicit-Euler step of it, `(I - dt*S(h))^{-1}`. Row/column 0
+    (h) are zero:
     friction does not change h and does not depend on it as a *state* (h
     enters here only as the frozen parameter).
     """

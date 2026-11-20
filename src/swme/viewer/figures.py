@@ -26,7 +26,8 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from ..report.data import RunData, parse_eigenvalue_column
+from ..report.data import RunData, fmt as _report_fmt, parse_eigenvalue_column
+from ..report.history import sample_indices
 from .theme import LIGHT, Theme
 
 PANEL_HEIGHT = 250
@@ -42,15 +43,8 @@ MAGNITUDE_FLOOR = 1e-16
 # ---------------------------------------------------------------------------
 
 def fmt(value, spec: str = ".6g") -> str:
-    if value is None:
-        return "unknown"
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    if isinstance(value, (float, np.floating)):
-        return format(float(value), spec) if np.isfinite(value) else "n/a"
-    return str(value)
+    """The report's `fmt`, with "n/a" for a number that is not finite."""
+    return _report_fmt(value, spec, nonfinite="n/a")
 
 
 def moment_label(index: int) -> str:
@@ -117,19 +111,6 @@ def field_range(run: RunData, column: str) -> list[float] | None:
     if column == "h" and run.has_topography:
         values = np.concatenate([values, run.bed_elevation])
     return padded_range(values)
-
-
-def sample_indices(count: int, budget: int) -> np.ndarray:
-    """At most `budget` evenly spaced indices into `count` items, ends included."""
-    if count <= budget:
-        return np.arange(count)
-    return np.unique(np.linspace(0, count - 1, budget).round().astype(int))
-
-
-def time_range(run: RunData) -> tuple[float, float] | None:
-    if run.snapshots is None:
-        return None
-    return float(run.snapshots.times[0]), float(run.snapshots.times[-1])
 
 
 def axis_ref(index: int) -> tuple[str, str]:
@@ -233,7 +214,7 @@ def decimate_rows(times, values, max_rows: int = MAX_MAP_ROWS):
     """Evenly spaced rows of a space-time array, first and last kept."""
     if len(times) <= max_rows:
         return times, values
-    picks = np.unique(np.linspace(0, len(times) - 1, max_rows).round().astype(int))
+    picks = sample_indices(len(times), max_rows)
     return times[picks], values[picks]
 
 
@@ -483,9 +464,7 @@ def profile_lines_figure(run: RunData, t: float | None = None, x: float | None =
                              theme)
     else:
         snapshots = run.snapshots
-        picks = np.unique(np.linspace(0, len(snapshots.times) - 1,
-                                      min(PROFILE_CURVES, len(snapshots.times)))
-                          .round().astype(int))
+        picks = sample_indices(len(snapshots.times), PROFILE_CURVES)
         ramp = _ordinal_ramp(theme, len(picks))
         for shade, index in zip(ramp, picks):
             curve = run.velocity_profile(snapshots.values[index][cell:cell + 1], Z_POINTS)[0]

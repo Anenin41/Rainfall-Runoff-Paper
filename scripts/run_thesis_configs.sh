@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -j|--jobs) JOBS="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,17p' "${BASH_SOURCE[0]}"
+            sed -n '2,15p' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *) FILTERS+=("$1"); shift ;;

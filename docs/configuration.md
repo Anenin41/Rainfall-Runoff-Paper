@@ -36,8 +36,8 @@ These apply only when `type: RechargeSWME1D`.
 | `rainfall_rate` | number | Rainfall rate \(R\) |
 | `infiltration_type` | choice | `horton` or `constant` |
 | `mixing_friction_model` | choice | `admissible` (the only option) |
-| `alpha_R` | number | Mixing friction coefficient for rainfall |
-| `alpha_I` | number | Mixing friction coefficient for infiltration |
+| `alpha_R` | number | Mixing friction coefficient for rainfall: \(f_R = \alpha_R R\) |
+| `alpha_I` | number | Mixing friction coefficient for water entering through the bed: \(f_I = \alpha_I \max(0, -I)\), so it acts only on exfiltration (\(I < 0\)) |
 
 Horton infiltration. The capacity is \(f_p(t) = f_c + (f_0 - f_c) e^{-kt}\), and the
 realised rate is the capacity capped by the water supplied to the bed, the rain plus the
@@ -58,8 +58,8 @@ Constant infiltration:
 
 | Key | Type | Default | Meaning |
 |:--|:--|:--|:--|
-| `constant_infiltration_rate` | number | required | The rate \(I_0\) |
-| `constant_infiltration_eps` | number | `1e-14` | Guard against removing water from an empty cell |
+| `constant_infiltration_rate` | number | required | The rate \(I_0\): positive for infiltration, negative for exfiltration (returned unchanged, no cap) |
+| `constant_infiltration_eps` | number | `1e-14` | Lower bound on \(\Delta t\) in the availability cap \(h/\Delta t\), guarding the division |
 | `constant_limit_by_rainfall` | bool | `false` | Cap the rate at the rainfall rate |
 | `constant_limit_by_available_water` | bool | `true` | For \(I_0 > 0\), cap the rate at the water available over one step: \(I = \min(I_0,\ R + h/\Delta t)\) (thesis eq. 4.12). With `constant_limit_by_rainfall: true` the cap is \(\min(I_0,\ R,\ h/\Delta t)\) |
 
@@ -97,7 +97,8 @@ differ and which of them are well balanced.
     and none of the shipped models provides one. Selecting it overwrites the state with
     the source term at every step instead of integrating anything: an inviscid case ends
     with \(h = 0\) everywhere and no error is raised. Use `ExplicitEuler`, or
-    `ImplicitEuler` with `linear_source: true` for stiff friction. See
+    `ImplicitEuler` for stiff friction (with `linear_source: true`, or `false` for
+    `RechargeSWME1D`). See
     [What to watch out for](limitations.md#the-exact-time-integrator-is-a-stub).
 
 ## `topography`

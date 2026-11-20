@@ -26,7 +26,7 @@ class RectangularMesh(ABC):
     @abstractmethod
     def __init__(self, boundaries, resolution):
         """
-        Constructs all the necessary attributes for the PDE object.
+        Constructs all the necessary attributes for the mesh object.
 
         Parameters
         ----------
@@ -82,10 +82,7 @@ class UniformRectangularMesh1D(RectangularMesh):
     """
 
     def __init__(self, boundaries, resolution):
-        self.boundaries = boundaries
-        self.resolution = resolution
-
-        self.cell_center_positions = self._compute_cell_centers()
+        super().__init__(boundaries, resolution)
 
         # Bottom topography Z(x), sampled per cell and including the two ghost
         # cells, so it is indexed exactly like the state array `values`:

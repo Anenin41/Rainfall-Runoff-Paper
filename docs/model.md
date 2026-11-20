@@ -116,7 +116,7 @@ the friction term is
 \begin{aligned}
 P_0 &= 0 \\
 P_1 &= \frac{\nu}{\lambda}\, u_b \\
-P_{i+2} &= (2i+1)\left[
+P_{i+1} &= (2i+1)\left[
   \frac{\nu}{\lambda}\, \phi_i(0)\, u_b
   + \frac{\nu}{h^2} \sum_j C_{ij}\, h\alpha_j
 \right]
@@ -177,8 +177,9 @@ Keeping the moments small is not the right safety rule.
 
 `RechargeSWME1D` adds two effects to the surface.
 
-**Rainfall** at rate \(R\) adds water from above. **Infiltration** at rate \(I\)
-removes water into the ground. Both change the mass balance, and because the water
+**Rainfall** at rate \(R \geq 0\) adds water from above. **Infiltration** at rate
+\(I\) exchanges water with the ground: \(I > 0\) removes water from the flow, \(I < 0\)
+(exfiltration) returns water to it. Both change the mass balance, and because the water
 entering and leaving does so at a particular height, both change the momentum and the
 moments too:
 
@@ -186,7 +187,7 @@ moments too:
 \begin{aligned}
 S_0 &= R - I \\
 S_1 &= R\, u_s - I\, u_b \\
-S_{i+2} &= (2i+1)\, R \left[\phi_i(1)\, u_s - u_m r_i - \sum_j E_{ij} \alpha_j\right]
+S_{i+1} &= (2i+1)\, R \left[\phi_i(1)\, u_s - u_m r_i - \sum_j E_{ij} \alpha_j\right]
        + (2i+1)\, I \left[-\phi_i(0)\, u_b + u_m s_i + \sum_j F_{ij} \alpha_j\right]
 \end{aligned}
 \]
@@ -198,12 +199,24 @@ water leaves through the bed, so it carries the bed velocity \(u_b\).
 
 Two are available.
 
-**Horton infiltration** models soil that saturates over time. The rate starts at
+**Horton infiltration** models soil that saturates over time. Its capacity starts at
 \(f_0\), decays towards \(f_c\), and the decay constant is \(k\):
 
 \[
-I(t) = f_c + (f_0 - f_c)\, e^{-k t}
+f_p(t) = f_c + (f_0 - f_c)\, e^{-k t}
 \]
+
+The rate actually removed is the capacity capped by the water supplied to the bed over
+one source step, the rain plus the water standing on it:
+
+\[
+I = \min\bigl(f_p(t),\; R + h/\Delta t\bigr)
+\]
+
+so a dry bed infiltrates \(\min(f_p, R)\) and a ponded bed infiltrates at full
+capacity. The thesis used \(I = \min\bigl(f_p(t),\; R,\; h/\Delta t\bigr)\), under
+which standing water never infiltrates; it is kept behind `horton_limit_by_rainfall`
+(see [Configuration](configuration.md#rainfall-and-infiltration)).
 
 **Constant infiltration** uses a fixed rate. It can optionally be limited by the
 rainfall rate or by the water actually available, so it cannot remove water that is
@@ -211,10 +224,22 @@ not there.
 
 ### Mixing friction
 
-Water joining or leaving the layer has to be brought to the layer's velocity, and that
-exchange of momentum acts like an extra friction. The `admissible` mixing model
-represents it with two coefficients, `alpha_R` for rainfall and `alpha_I` for
-infiltration.
+Water joining the layer has to be brought to the layer's velocity, and that exchange
+of momentum acts like an extra friction. The `admissible` mixing model represents it
+with two coefficients, `alpha_R` for rainfall and `alpha_I` for water entering through
+the bed (exfiltration):
+
+\[
+f_R = \alpha_R R, \qquad f_I = \alpha_I \max(0, -I)
+\]
+
+so `alpha_I` has no effect while \(I \geq 0\), and none at all under Horton
+infiltration. The two coefficients enter the friction term alongside the Navier slip:
+
+\[
+P_1 \mathrel{+}= f_R\, u_s + f_I\, u_b, \qquad
+P_{i+1} \mathrel{+}= (2i+1)\bigl(f_R\, \phi_i(1)\, u_s + f_I\, \phi_i(0)\, u_b\bigr)
+\]
 
 ## Choosing the moment order
 

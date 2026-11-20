@@ -25,20 +25,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from .data import RunData
+from .data import RunData, fmt as _fmt
+from .history import sample_indices
 from .style import Prose, ReportStyle
-
-
-def _fmt(value, spec: str = ".6g") -> str:
-    if value is None:
-        return "unknown"
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    if isinstance(value, (float, np.floating)):
-        return format(float(value), spec)
-    return str(value)
 
 
 def _panel_grid(style: ReportStyle, panels: int, **kwargs):
@@ -267,10 +256,7 @@ def page_velocity_profiles(run: RunData, style: ReportStyle):
     # Sample positions across the wet part of the domain.
     wet = np.flatnonzero(run.final["h"].to_numpy() > run.effective_thresholds.h_wet)
     pool = wet if wet.size else np.arange(len(x))
-    picks = np.unique(np.linspace(0, pool.size - 1,
-                                  min(style.max_profile_curves, pool.size))
-                      .round().astype(int))
-    cells = pool[picks]
+    cells = pool[sample_indices(pool.size, style.max_profile_curves)]
 
     ax = axes[0, 0]
     for cell in cells:

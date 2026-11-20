@@ -34,7 +34,7 @@ def compute_recharge_mass_source(
 
         S[0] = R - I
         S[1] = R*u_s - I*u_b
-        S[i+2] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
+        S[i+1] = (2i+1)*R*(phi_i(1)*u_s - u_m*r_i - sum_j E[i,j]*alpha_j)
                  + (2i+1)*I*(-phi_i(0)*u_b + u_m*s_i + sum_j F[i,j]*alpha_j)
 
     Deliberately has NO dry-cell short circuit, unlike the mixing friction
@@ -79,7 +79,7 @@ def compute_mixing_friction(
 
         P_mix[0] = 0
         P_mix[1] = f_R*u_s + f_I*u_b
-        P_mix[i+2] = (2i+1)*(f_R*phi_i(1)*u_s + f_I*phi_i(0)*u_b),   i = 1..N
+        P_mix[i+1] = (2i+1)*(f_R*phi_i(1)*u_s + f_I*phi_i(0)*u_b),   i = 1..N
     """
     values = np.asarray(values, dtype=np.float64)
     n = order + 2

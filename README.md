@@ -23,7 +23,7 @@ The last line runs one case, writes its CSVs to `results/smoke_test_1/` and buil
 report next to them. To check the install, run the test suite:
 
 ```bash
-uv run pytest -q                           # 1144 tests, ~9 min
+uv run pytest -q                           # 1153 tests, ~9 min
 ```
 
 ## The commands

@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -r|--report) REPORT="--report"; shift ;;
         -h|--help)
-            sed -n '2,29p' "${BASH_SOURCE[0]}"
+            sed -n '2,26p' "${BASH_SOURCE[0]}"
             exit 0
             ;;
         *) FILTERS+=("$1"); shift ;;

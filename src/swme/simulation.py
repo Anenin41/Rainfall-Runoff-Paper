@@ -391,18 +391,19 @@ class ClassicalSimulation1D(Simulation):
 
         # Iterate over physical cells and compute eigenvalues of the local
         # transport matrix. Store diagnostics.
+        # Skip dry states before trying to build the transport matrix. The
+        # threshold is the model's *physical* dry threshold, not the eigenvalue
+        # tolerance that happened to be reused here before Step 6 - a cell
+        # below h_dry has had its moments ramped away, so its spectrum says
+        # nothing about the flow.
+        dry_threshold = getattr(
+            getattr(self.pde_type, 'wet_dry', None), 'h_dry',
+            self.hyperbolicity_tol)
+
         for i in range(1, self.mesh.resolution + 1):
             local_values = values[i, :].copy()
             x_i = float(self.mesh.cell_center_positions[i - 1])
 
-            # Skip dry states before trying to build the transport matrix.
-            # The threshold is the model's *physical* dry threshold, not the
-            # eigenvalue tolerance that happened to be reused here before
-            # Step 6 - a cell below h_dry has had its moments ramped away, so
-            # its spectrum says nothing about the flow.
-            dry_threshold = getattr(
-                getattr(self.pde_type, 'wet_dry', None), 'h_dry',
-                self.hyperbolicity_tol)
             if ((not np.all(np.isfinite(local_values))) or
                 local_values[0] <= dry_threshold):
                 eigvals = np.full(self.number_of_variables, np.nan)
@@ -639,6 +640,68 @@ class ClassicalSimulation1D(Simulation):
                 getattr(thresholds, 'shoreline_treatment', False))
             hyperbolic = bool(getattr(self.pde_type, 'hyperbolic', False))
 
+        # The fluctuations of every interface, written into the two arrays
+        # above. A function rather than inline code because the positivity
+        # limiter may need them again for a smaller step.
+        def compute_all_fluctuations(step_size):
+            if use_topography:
+                n_var = self.number_of_variables
+                for i in range(self.mesh.resolution+1):
+                    if treat_shorelines:
+                        treated = wetdry.shoreline_fluctuation(
+                            self.spatial_discretization, system_matrix,
+                            values[i,:], values[i+1,:],
+                            bed_elevation[i], bed_elevation[i+1],
+                            step_size, delta_x, thresholds,
+                            hyperbolic=hyperbolic)
+                        if treated is not None:
+                            fluctuations_min[i,:], fluctuations_plus[i,:] = treated
+                            continue
+
+                    augmented_left[:n_var] = values[i,:]
+                    augmented_left[n_var] = bed_elevation[i]
+                    augmented_right[:n_var] = values[i+1,:]
+                    augmented_right[n_var] = bed_elevation[i+1]
+
+                    fluctuation_min, fluctuation_plus = self.spatial_discretization.compute_fluctuation(
+                        augmented_left,
+                        augmented_right,
+                        augmented_system_matrix,
+                        step_size,
+                        delta_x)
+
+                    # Drop the Z row: it is zero by construction, and the
+                    # state array has no Z column to write it into.
+                    fluctuations_min[i,:] = fluctuation_min[:n_var]
+                    fluctuations_plus[i,:] = fluctuation_plus[:n_var]
+
+                    # Second shoreline trigger: the ordinary fluctuation
+                    # across a bed step would drain a dry cell (Castro's
+                    # Case 3.3, for example water receding from a barely
+                    # submerged dry cell). The lower cell then gets the
+                    # wall.
+                    bed_step = bed_elevation[i+1] - bed_elevation[i]
+                    if (treat_shorelines and bed_step != 0.0
+                            and wetdry.drains_a_dry_cell(
+                                values[i,0], values[i+1,0],
+                                values[i,1] + fluctuation_min[0],
+                                step_size, delta_x, thresholds)):
+                        fluctuations_min[i,:], fluctuations_plus[i,:] = \
+                            wetdry.shoreline_fluctuation(
+                                self.spatial_discretization, system_matrix,
+                                values[i,:], values[i+1,:],
+                                bed_elevation[i], bed_elevation[i+1],
+                                step_size, delta_x, thresholds,
+                                hyperbolic=hyperbolic, force_wall=True)
+            else:
+                for i in range(self.mesh.resolution+1):
+                    fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
+                        values[i,:],
+                        values[i+1,:],
+                        system_matrix,
+                        step_size,
+                        delta_x)
+
         while t < t_end:
 
             # update boundary conditions
@@ -650,69 +713,10 @@ class ClassicalSimulation1D(Simulation):
 
             delta_t = CFL*delta_x/max_speed
 
-            def compute_all_fluctuations(step_size):
-                if use_topography:
-                    n_var = self.number_of_variables
-                    for i in range(self.mesh.resolution+1):
-                        if treat_shorelines:
-                            treated = wetdry.shoreline_fluctuation(
-                                self.spatial_discretization, system_matrix,
-                                values[i,:], values[i+1,:],
-                                bed_elevation[i], bed_elevation[i+1],
-                                step_size, delta_x, thresholds,
-                                hyperbolic=hyperbolic)
-                            if treated is not None:
-                                fluctuations_min[i,:], fluctuations_plus[i,:] = treated
-                                continue
-
-                        augmented_left[:n_var] = values[i,:]
-                        augmented_left[n_var] = bed_elevation[i]
-                        augmented_right[:n_var] = values[i+1,:]
-                        augmented_right[n_var] = bed_elevation[i+1]
-
-                        fluctuation_min, fluctuation_plus = self.spatial_discretization.compute_fluctuation(
-                            augmented_left,
-                            augmented_right,
-                            augmented_system_matrix,
-                            step_size,
-                            delta_x)
-
-                        # Drop the Z row: it is zero by construction, and the
-                        # state array has no Z column to write it into.
-                        fluctuations_min[i,:] = fluctuation_min[:n_var]
-                        fluctuations_plus[i,:] = fluctuation_plus[:n_var]
-
-                        # Second shoreline trigger: the ordinary fluctuation
-                        # across a bed step would drain a dry cell (Castro's
-                        # Case 3.3, for example water receding from a barely
-                        # submerged dry cell). The lower cell then gets the
-                        # wall.
-                        bed_step = bed_elevation[i+1] - bed_elevation[i]
-                        if (treat_shorelines and bed_step != 0.0
-                                and wetdry.drains_a_dry_cell(
-                                    values[i,0], values[i+1,0],
-                                    values[i,1] + fluctuation_min[0],
-                                    step_size, delta_x, thresholds)):
-                            fluctuations_min[i,:], fluctuations_plus[i,:] = \
-                                wetdry.shoreline_fluctuation(
-                                    self.spatial_discretization, system_matrix,
-                                    values[i,:], values[i+1,:],
-                                    bed_elevation[i], bed_elevation[i+1],
-                                    step_size, delta_x, thresholds,
-                                    hyperbolic=hyperbolic, force_wall=True)
-                else:
-                    for i in range(self.mesh.resolution+1):
-                        fluctuations_min[i,:],fluctuations_plus[i,:] = self.spatial_discretization.compute_fluctuation(
-                            values[i,:],
-                            values[i+1,:],
-                            system_matrix,
-                            step_size,
-                            delta_x)
-
             compute_all_fluctuations(delta_t)
 
             # Positivity-preserving timestep limiter (RESTRUCTURE_PLAN.md
-            # §2.3(c)). The mass update of cell i is
+            # section 3.3). The mass update of cell i is
             #     h_i^{n+1} = h_i - dt/dx * (F+_{i-1,0} + F-_{i,0}),
             # so wherever that net outflow is positive it must not exceed the
             # water the cell actually holds. Capping dt pre-emptively is what
@@ -822,18 +826,21 @@ class ClassicalSimulation1D(Simulation):
                 if values[i, 0] < -_NEGATIVE_HEIGHT_TOLERANCE:
                     hint = ""
                     if getattr(self.pde_type, 'viscosity', 0.0) and not \
-                            getattr(self.pde_type, 'linear_source', False):
+                            isinstance(self.time_integration,
+                                       timeIntegration.Implicit):
                         hint = (
                             " NOTE: this run has nonzero viscosity and an "
-                            "explicit source term. The Navier-slip friction "
+                            "explicit source step. The Navier-slip friction "
                             "carries a nu/h^2 factor, so it becomes stiff near "
                             "a drying front and explicit integration of it "
                             "goes unstable - which shows up here, as a blown-up "
                             "moment dragging the height negative, rather than "
-                            "as a failure of the positivity limiter. Use the "
-                            "implicit source path (linear_source = True with "
-                            "timeIntegrator = ImplicitEuler), which is exactly "
-                            "what it is for."
+                            "as a failure of the positivity limiter. Integrate "
+                            "the source implicitly: numerics.time_integrator: "
+                            "ImplicitEuler, with pde.linear_source: true for "
+                            "SWME1D and HSWME1D, or linear_source: false "
+                            "(Newton) for RechargeSWME1D, which has no linear "
+                            "source form."
                         )
                     raise RuntimeError(
                         f"Negative height produced after update  "
@@ -879,13 +886,6 @@ class ClassicalSimulation1D(Simulation):
             self._store_hyperbolicity_snapshot(values, step = step, time = t)
             self._store_mass_budget(values, step, t, delta_x, budget)
 
-        # Hyperbolicity report. The scheme has already eigendecomposed the
-        # transport matrix at every interface to build its viscosity, so this
-        # costs nothing extra to collect - and without it a run whose spectrum
-        # left the real axis finishes looking exactly like one that did not.
-        # SWME is only unconditionally hyperbolic for N <= 1; from N = 2 up it
-        # can lose hyperbolicity at large moments, which is what HSWME
-        # (`hyperbolic=True`) is for. See tests/test_hyperbolicity.py.
         # Wet-dry mass audit. The positivity limiter guarantees h >= 0 for
         # every cell holding real water; cells already below h_dry are exempt
         # from it and can pick up round-off negatives that get clamped, which
@@ -905,6 +905,14 @@ class ClassicalSimulation1D(Simulation):
                 stacklevel=2,
             )
 
+        # Hyperbolicity report. The scheme has already eigendecomposed the
+        # transport matrix at every interface to build its viscosity, so this
+        # costs nothing extra to collect - and without it a run whose spectrum
+        # left the real axis finishes looking exactly like one that did not.
+        # SWME is only unconditionally hyperbolic for N <= 1; from N = 2 up it
+        # can lose hyperbolicity at large moments, which is what HSWME
+        # (`hyperbolic=True`) is for. See tests/test_hyperbolicity.py.
+        #
         # Be precise about what this measures: the *path-averaged* interface
         # matrix, not A(U) at any single state. Those are different questions,
         # and the averaged one leaves the real axis at a strong enough jump
@@ -922,6 +930,16 @@ class ClassicalSimulation1D(Simulation):
             # per interface, but Osher records five - one weight-scaled matrix
             # per quadrature node - so calling the denominator an interface
             # count was wrong by 5x for Osher (Step 8.5, defect D5).
+            if getattr(self.pde_type, 'hyperbolic', False):
+                model_note = (f"HSWME at N={self.order} is hyperbolic at "
+                              "every state")
+            elif self.order <= 1:
+                model_note = (f"SWME at N={self.order} is hyperbolic at "
+                              "every state")
+            else:
+                model_note = (f"SWME at N={self.order} can lose "
+                              "hyperbolicity; HSWME, hyperbolic: true, "
+                              "cannot")
             warnings.warn(
                 f"Complex spectra at {nonhyperbolic} of {examined} recorded "
                 f"spectra (largest |Im(lambda)| = "
@@ -930,10 +948,9 @@ class ClassicalSimulation1D(Simulation):
                 "leave the real axis at a strong jump - a wet-dry front does "
                 "so even for plain shallow water - and is therefore not on "
                 "its own evidence that the model lost hyperbolicity. To check "
-                f"the model itself (the N={self.order} SWME system is only "
-                "unconditionally hyperbolic for N <= 1; HSWME always is), set "
-                "store_hyperbolicity = True for the cell-by-cell spectrum of "
-                "A(U).",
+                f"the model itself ({model_note}), set "
+                "postprocessing.store_hyperbolicity: true for the "
+                "cell-by-cell spectrum of A(U).",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -1004,8 +1021,7 @@ class ClassicalSimulation1D(Simulation):
 
         data_array = np.zeros((self.mesh.resolution,self.pde_type.compute_number_of_variables(self.order)+1)) # rewrite this such that it can be generalized to other PDE models
 
-        for i in range(self.mesh.resolution):
-            data_array[i,0] = self.mesh.cell_center_positions[i]
+        data_array[:,0] = self.mesh.cell_center_positions
 
         data_array[:,1:] = values[1:-1,:]
 

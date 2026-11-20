@@ -36,6 +36,8 @@ import numpy as np
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.figure import Figure
 
+from .history import sample_indices
+
 
 class Prose(str):
     """A paragraph in a text block that the renderer may re-wrap.
@@ -357,11 +359,7 @@ class ReportStyle:
 
     def curve_times(self, times) -> np.ndarray:
         """Indices of an evenly spaced handful of times, for overlay plots."""
-        times = np.asarray(times)
-        count = min(self.max_snapshot_curves, len(times))
-        if count == 0:
-            return np.zeros(0, dtype=int)
-        return np.unique(np.linspace(0, len(times) - 1, count).round().astype(int))
+        return sample_indices(len(np.asarray(times)), self.max_snapshot_curves)
 
     # ------------------------------------------------------------------
     # internals

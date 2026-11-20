@@ -210,8 +210,7 @@ def time_grid(store: RunStore, mode: str, selected: str | None, compare_set) -> 
     if len(times) == 0:
         return [0.0]
     if len(times) > MAX_TIME_GRID:
-        picks = np.unique(np.linspace(0, len(times) - 1, MAX_TIME_GRID).round().astype(int))
-        times = times[picks]
+        times = times[fig.sample_indices(len(times), MAX_TIME_GRID)]
     return [float(value) for value in times]
 
 

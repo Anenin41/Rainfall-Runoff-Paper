@@ -258,8 +258,9 @@ class PDE(ABC):
         Notes
         -----
         Returning a *matrix* is only valid when the implementation is paired
-        with `timeIntegration.Implicit`, which multiplies it onto the state;
-        `SWME1D` guards this with a constructor-time check on `linear_source`.
+        with `timeIntegration.ImplicitEuler(linear=True)`, which multiplies it
+        onto the state; the config loader (`cli.build_pde`) rejects any other
+        pairing.
         """
 
         pass
@@ -453,7 +454,6 @@ class SWME1D(PDE):
         self.slip_length = slip_length
         self.hyperbolic = hyperbolic
         self.linear_source = linear_source
-        self.exact_source_computation = False
         self.topography = topography if topography is not None else TopographySettings()
         self.wet_dry = wet_dry if wet_dry is not None else DEFAULT_THRESHOLDS
 
@@ -606,7 +606,7 @@ class SWME1D(PDE):
         S : np.ndarray
             source term vector, or - when `self.linear_source` is set - the
             already-solved implicit-Euler matrix (I - delta_t*S(h))^-1, which
-            `timeIntegration.Implicit` multiplies onto the state (see
+            `timeIntegration.ImplicitEuler` multiplies onto the state (see
             `_compute_source_matrix_inverse`).
         """
         if self.linear_source:
@@ -670,279 +670,58 @@ class SWME1D(PDE):
                            initial_condition: str,
                            position: float) -> np.ndarray:
         initial_values = np.zeros(self.compute_number_of_variables(order))
+        # The state is [h, h*u_m, h*a_1, ..., h*a_N] and starts at zero, so each
+        # case sets only its non-zero entries. Unless stated otherwise the
+        # velocity is zero and so are the moments, at every order.
         if initial_condition == 'constantHeight_noVelocity':
             initial_values[0] = 1
-            initial_values[1] = 0
-            if order > 0:
-                initial_values[2] = 0 
-            if order > 1:
-                initial_values[3] = 0 
-            if order > 2:
-                initial_values[4] = 0 
-            if order > 3:
-                initial_values[5] = 0 
-            if order > 4:
-                initial_values[6] = 0 
-            if order > 5:
-                initial_values[7] = 0
         elif initial_condition == 'constantHeight_constantVelocity':
             initial_values[0] = 1
             initial_values[1] = 1*initial_values[0]
-            if order > 0:
-                initial_values[2] = 0 
-            if order > 1:
-                initial_values[3] = 0 
-            if order > 2:
-                initial_values[4] = 0 
-            if order > 3:
-                initial_values[5] = 0 
-            if order > 4:
-                initial_values[6] = 0 
-            if order > 5:
-                initial_values[7] = 0
         elif initial_condition == 'damBreak_noVelocity':
             x0 = 0
-            if position < x0:
-                initial_values[0] = 2
-                initial_values[1] = 0*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0
-                if order > 5:
-                    initial_values[7] = 0 
-            else:
-                initial_values[0] = 1
-                initial_values[1] = 0*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0 
-                if order > 5:
-                    initial_values[7] = 0
+            initial_values[0] = 2 if position < x0 else 1
         elif initial_condition == 'damBreak_constantVelocity':
             x0 = 0
-            if position < x0:
-                initial_values[0] = 3
-                initial_values[1] = 0.25*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0
-                if order > 5:
-                    initial_values[7] = 0 
-            else:
-                initial_values[0] = 1
-                initial_values[1] = 0.25*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0 
-                if order > 5:
-                    initial_values[7] = 0
+            initial_values[0] = 3 if position < x0 else 1
+            initial_values[1] = 0.25*initial_values[0]
         elif initial_condition == 'linearHeight_noVelocity':
             initial_values[0] = 1 + 0.1*position
-            initial_values[1] = 0*initial_values[0]
-            if order > 0:
-                initial_values[2] = 0 
-            if order > 1:
-                initial_values[3] = 0 
-            if order > 2:
-                initial_values[4] = 0 
-            if order > 3:
-                initial_values[5] = 0 
-            if order > 4:
-                initial_values[6] = 0 
-            if order > 5:
-                initial_values[7] = 0
-            if order > 6:
-                initial_values[8] = 0
         elif initial_condition == 'smooth_wave':
             initial_values[0] = 1 + 0.5*np.exp(-5*position**2)
             initial_values[1] = 1.0*initial_values[0]
-            if order > 0:
-                initial_values[2] = 1.0 
-            if order > 1:
-                initial_values[3] = 1.0 
-            if order > 2:
-                initial_values[4] = 1.0 
-            if order > 3:
-                initial_values[5] = 1.0 
-            if order > 4:
-                initial_values[6] = 1.0 
-            if order > 5:
-                initial_values[7] = 1.0  
+            # h*a_i = 1 (not a_i = 1), and only up to N = 6: higher moments
+            # stay zero.
+            initial_values[2:min(order, 6) + 2] = 1.0
         elif initial_condition == 'smooth_constantVelocity':
             initial_values[0] = 1 + 0.5*np.exp(-15*position**2)
             initial_values[1] = 0.2*initial_values[0]
-            if order > 0:
-                initial_values[2] = 0
-            if order > 1:
-                initial_values[3] = 0 
-            if order > 2:
-                initial_values[4] = 0 
-            if order > 3:
-                initial_values[5] = 0 
-            if order > 4:
-                initial_values[6] = 0 
-            if order > 5:
-                initial_values[7] = 0  
         elif initial_condition == 'symmetric_damBreak':
             x0 = -2
             x1 = 2
-            if x0 < position < x1:
-                initial_values[0] = 2
-                initial_values[1] = 0.*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0
-                if order > 5:
-                    initial_values[7] = 0 
-            else:
-                initial_values[0] = 1
-                initial_values[1] = 0.*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0 
-                if order > 5:
-                    initial_values[7] = 0
+            initial_values[0] = 2 if x0 < position < x1 else 1
         elif initial_condition == 'smooth_plus_damBreak':
             x0 = -7
             x1 = 7
-            if  position < x0:
+            if position < x0:
                 initial_values[0] = 4
-                initial_values[1] = 0.05*initial_values[0]
-                if order > 0:
-                    initial_values[2] = -0.01*initial_values[0] 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0*initial_values[0] 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0
-                if order > 5:
-                    initial_values[7] = 0 
             else:
                 initial_values[0] = 3 + np.exp(-1.5*(position-x1)**2)
-                initial_values[1] = 0.05*initial_values[0]
-                if order > 0:
-                    initial_values[2] = -0.01*initial_values[0] 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0*initial_values[0] 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0 
-                if order > 5:
-                    initial_values[7] = 0 
+            initial_values[1] = 0.05*initial_values[0]
+            if order > 0:
+                initial_values[2] = -0.01*initial_values[0]
         elif initial_condition == 'linearDamBreak_noVelocity':
             x0 = -4
             x1 = 4
             if x0 < position < x1:
                 initial_values[0] = 2 + (position+4)/8.0
-                initial_values[1] = 0*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0
-                if order > 5:
-                    initial_values[7] = 0 
             else:
                 initial_values[0] = 2
-                initial_values[1] = 0*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0 
-                if order > 5:
-                    initial_values[7] = 0 
         elif initial_condition == 'colliding_damBreak':
             x0 = -0.5
             x1 = 0.5
-            if position < x0 or position > x1:
-                initial_values[0] = 3
-                initial_values[1] = 0.5*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0
-                if order > 5:
-                    initial_values[7] = 0 
-            else:
-                initial_values[0] = 1
-                initial_values[1] = 0.5*initial_values[0]
-                if order > 0:
-                    initial_values[2] = 0 
-                if order > 1:
-                    initial_values[3] = 0 
-                if order > 2:
-                    initial_values[4] = 0 
-                if order > 3:
-                    initial_values[5] = 0 
-                if order > 4:
-                    initial_values[6] = 0 
-                if order > 5:
-                    initial_values[7] = 0
+            initial_values[0] = 3 if position < x0 or position > x1 else 1
+            initial_values[1] = 0.5*initial_values[0]
         elif initial_condition == 'damBreak_dryBed':
             # The canonical wet-dry benchmark (RESTRUCTURE_PLAN.md Step 6):
             # a column of water at rest released onto a completely dry bed.
@@ -1010,18 +789,8 @@ class SWME1D(PDE):
         elif initial_condition == 'smooth_wave_smallHeightGradient':
             initial_values[0] = 1 + 0.5*np.exp(-3*position**2)
             initial_values[1] = 1.0*initial_values[0]
-            if order > 0:
-                initial_values[2] = 1.0 
-            if order > 1:
-                initial_values[3] = 1.0 
-            if order > 2:
-                initial_values[4] = 1.0 
-            if order > 3:
-                initial_values[5] = 1.0 
-            if order > 4:
-                initial_values[6] = 1.0 
-            if order > 5:
-                initial_values[7] = 1.0  
+            # As for 'smooth_wave': h*a_i = 1, up to N = 6.
+            initial_values[2:min(order, 6) + 2] = 1.0
         return initial_values
     
     def compute_number_of_variables(self,
